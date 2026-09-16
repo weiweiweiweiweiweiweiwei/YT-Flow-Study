@@ -31,3 +31,7 @@ goalInput.addEventListener("change", () => {
   goalInput.value = value;
   chrome.storage.local.set({ dailyGoalMinutes: value });
 });
+
+document.getElementById("openReviewBtn").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("review.html") });
+});

@@ -33,6 +33,7 @@
   max-width: calc(280px * var(--my-box-scale));
   z-index: 2147483647;
   pointer-events: auto;
+  user-select: none; /* 雙擊是「收藏」手勢，不要被瀏覽器當成選字 */
 }
 
 .my-box-original {
@@ -119,25 +120,76 @@ html.zerostudy-immersion-active ytd-watch-next-secondary-results-renderer {
   border-radius: 2px;
 }
 
-/* 右鍵字幕單字跳出的小選單：標記／取消標記「學習中」 */
-.zerostudy-context-menu {
-  position: fixed;
-  z-index: 2147483647;
+/* ---------- 雙擊翻譯彈窗收藏「學習中」時的卡牌動畫 ---------- */
+/* 用獨立的 rotate / scale / translate 屬性做動畫，不動 transform，
+   這樣不會蓋掉 placeBoxAt() 用 transform 做的定位（一般模式 / 全螢幕模式的定位不一樣）。 */
+@keyframes my-card-shake {
+  0%,
+  100% {
+    rotate: 0deg;
+    scale: 1;
+  }
+  20% {
+    rotate: -4deg;
+    scale: 1.03;
+  }
+  40% {
+    rotate: 4deg;
+    scale: 1.03;
+  }
+  60% {
+    rotate: -3deg;
+    scale: 1.02;
+  }
+  80% {
+    rotate: 2deg;
+    scale: 1.01;
+  }
+}
+
+@keyframes my-card-flyup {
+  0% {
+    translate: 0 0;
+    scale: 1;
+    opacity: 1;
+  }
+  30% {
+    translate: 0 -6px;
+    scale: 1.05;
+    opacity: 1;
+  }
+  100% {
+    translate: 0 -60px;
+    scale: 0.85;
+    opacity: 0;
+  }
+}
+
+#my-translate-box.is-collecting {
+  animation: my-card-shake 0.3s ease, my-card-flyup 0.5s ease 0.3s forwards;
+  pointer-events: none;
+}
+
+@keyframes my-card-sparkle-fly {
+  0% {
+    transform: translate(-50%, -50%) translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) translate(var(--tx), var(--ty)) scale(0);
+    opacity: 0;
+  }
+}
+
+.my-card-sparkle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   background: #ffffff;
-  color: #1a1a1a;
-  border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
-  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
-  font-size: 13px;
-  padding: 4px;
-  min-width: 160px;
-}
-.zerostudy-context-menu-item {
-  padding: 8px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.zerostudy-context-menu-item:hover {
-  background: #f0f0f0;
+  box-shadow: 0 0 4px 1px rgba(255, 255, 255, 0.9);
+  pointer-events: none;
+  animation: my-card-sparkle-fly 0.6s ease-out forwards;
 }

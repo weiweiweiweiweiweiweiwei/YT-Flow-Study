@@ -77,30 +77,63 @@ document.addEventListener(
     if (e.target.tagName === "VIDEO") {
       actionPaused = false;
       wasPlayingBeforeHover = false;
+      syncMediaSessionPlaybackState();
     }
+  },
+  true
+);
+document.addEventListener(
+  "pause",
+  (e) => {
+    if (e.target.tagName === "VIDEO") syncMediaSessionPlaybackState();
   },
   true
 );
 
 // ---------- 滑鼠多媒體鍵（播放/暫停二合一）雙向切換 ----------
-// 有些滑鼠的側鍵會送出標準多媒體鍵事件（MediaPlayPause / MediaPlay / MediaPause）。
-// 原本的邏輯只處理「暫停 -> 播放」這個方向，導致影片播放中按同一顆鍵沒有反應。
-// 這裡改成：不管目前是播放還是暫停，按下都能正確切換到相反狀態。
-const MEDIA_TOGGLE_KEYS = new Set(["MediaPlayPause", "MediaPlay", "MediaPause"]);
-document.addEventListener("keydown", (e) => {
-  if (!MEDIA_TOGGLE_KEYS.has(e.key) && !MEDIA_TOGGLE_KEYS.has(e.code)) return;
+// 像羅技滑鼠側鍵這類「硬體多媒體鍵」，Windows/Chrome 是透過 Media Session API
+// 轉發的，不是單純的 keydown 事件。如果同時用 keydown 監聽 MediaPlayPause 又讓
+// Chrome 自己內建的 Media Session 行為一起跑，兩邊會各自切換一次播放/暫停，
+// 等於「雙重觸發」：按一下等於沒按，連續按幾次狀態就完全亂掉。
+// 正確做法是改用 setActionHandler 直接接管，並且主動回報 playbackState，
+// 這樣 Chrome 才知道目前真正是播放還暫停，不會兩邊各做各的。
+function syncMediaSessionPlaybackState() {
+  if (!("mediaSession" in navigator)) return;
   const video = getVideoEl();
-  if (!video) return;
-  e.preventDefault();
+  navigator.mediaSession.playbackState = video && !video.paused ? "playing" : "paused";
+}
 
-  if (video.paused) {
+if ("mediaSession" in navigator) {
+  navigator.mediaSession.setActionHandler("play", () => {
+    const video = getVideoEl();
+    if (!video) return;
     actionPaused = false;
     video.play().catch(() => {});
-  } else {
+  });
+  navigator.mediaSession.setActionHandler("pause", () => {
+    const video = getVideoEl();
+    if (!video) return;
     actionPaused = true;
     video.pause();
-  }
-});
+  });
+} else {
+  // 少數不支援 Media Session API 的環境，退回用 keydown 偵測多媒體鍵
+  const MEDIA_TOGGLE_KEYS = new Set(["MediaPlayPause", "MediaPlay", "MediaPause"]);
+  document.addEventListener("keydown", (e) => {
+    if (!MEDIA_TOGGLE_KEYS.has(e.key) && !MEDIA_TOGGLE_KEYS.has(e.code)) return;
+    const video = getVideoEl();
+    if (!video) return;
+    e.preventDefault();
+
+    if (video.paused) {
+      actionPaused = false;
+      video.play().catch(() => {});
+    } else {
+      actionPaused = true;
+      video.pause();
+    }
+  });
+}
 
 // ---------- 翻譯小框框：只顯示在點擊的單字（或選取的片語）正上方 ----------
 function ensureBox() {
@@ -175,6 +208,7 @@ document.addEventListener("keydown", (e) => {
 
 // ---------- 共用查詢邏輯 ----------
 let currentLookupText = null;
+let currentLookupSentence = ""; // 目前查詢的單字/片語所在的整句字幕，雙擊收藏時一併存起來當作上下文
 
 function playPronunciation(text) {
   chrome.runtime.sendMessage({ type: "speak", text }, (result) => {
@@ -184,7 +218,7 @@ function playPronunciation(text) {
   });
 }
 
-function doLookup(text, rect) {
+function doLookup(text, rect, sentence) {
   const video = getVideoEl();
   if (video && !video.paused) {
     video.pause();
@@ -192,6 +226,7 @@ function doLookup(text, rect) {
   actionPaused = true; // 查詢期間 & 查完之後，不要因為滑鼠移開字幕就自動續播
 
   currentLookupText = text;
+  currentLookupSentence = sentence || "";
   showBox({ loading: true, original: text }, rect);
   playPronunciation(text);
 
@@ -206,7 +241,8 @@ document.addEventListener("click", (e) => {
   if (!e.target.classList.contains("my-word")) return;
   const sel = window.getSelection();
   if (sel && sel.toString().trim().length > 0) return; // 使用者其實是在選取片語，不當作單字點擊
-  doLookup(e.target.textContent, e.target.getBoundingClientRect());
+  const sentence = e.target.closest(".ytp-caption-segment")?.textContent?.trim() || "";
+  doLookup(e.target.textContent, e.target.getBoundingClientRect(), sentence);
 });
 
 // ---------- 選取一段字幕文字（片語查詢） ----------
@@ -222,11 +258,12 @@ document.addEventListener("mouseup", (e) => {
   const words = Array.from(document.querySelectorAll(".ytp-caption-window-container .my-word")).filter((el) =>
     range.intersectsNode(el)
   );
+  const sentence = e.target.closest(".ytp-caption-segment")?.textContent?.trim() || "";
 
   if (words.length === 0) {
     const text = sel.toString().trim();
     if (!text) return;
-    doLookup(text, range.getBoundingClientRect());
+    doLookup(text, range.getBoundingClientRect(), sentence);
     return;
   }
 
@@ -241,7 +278,7 @@ document.addEventListener("mouseup", (e) => {
 
   const text = words.map((w) => w.textContent).join(" ").trim();
   if (!text) return;
-  doLookup(text, snappedRange.getBoundingClientRect());
+  doLookup(text, snappedRange.getBoundingClientRect(), sentence);
 });
 
 // 讓「在字幕文字上按住拖曳」變成選字，而不是被 YouTube 原生的拖曳字幕位置功能搶走。
@@ -355,7 +392,13 @@ async function loadCaptionCues() {
       return;
     }
     const capUrl = track.baseUrl + "&fmt=json3";
-    const data = await fetch(capUrl).then((r) => r.json());
+    const raw = await fetch(capUrl).then((r) => r.text());
+    if (!raw) {
+      // 常見於被廣告攔截套件擋掉請求時回傳空字串，不算真正的錯誤，安靜跳過即可
+      subtitleCues = [];
+      return;
+    }
+    const data = JSON.parse(raw);
     subtitleCues = (data.events || [])
       .filter((ev) => ev.segs && ev.segs.length)
       .map((ev) => ({
@@ -525,6 +568,10 @@ function immersionHeartbeatTick() {
   const video = getVideoEl();
   const isPlaying = !!(video && !video.paused && !video.ended);
 
+  // 保險機制：萬一有漏接的 play/pause 事件（例如影片元素被 YouTube 換掉），
+  // 每秒都順便校正一次 Media Session 回報的播放狀態，避免多媒體鍵長期對不起來。
+  syncMediaSessionPlaybackState();
+
   if (immersionActive && isPlaying) {
     if (tickAnchor === null) tickAnchor = Date.now();
     const now = Date.now();
@@ -569,7 +616,9 @@ function initImmersionTimer() {
   window.addEventListener("beforeunload", flushPendingSeconds);
 }
 
-// ==================== 單字標記「學習中」（右鍵字幕單字） ====================
+// ==================== 單字標記「學習中」（雙擊翻譯彈窗收藏） ====================
+// 右鍵選單會跟 YouTube 原生的右鍵選單衝突，改成：雙擊「Study 學習」翻譯彈窗，
+// 把目前查詢的單字/片語收藏進「學習中」清單，並播放收藏成功的卡牌動畫。
 let markedWordsMap = new Map(); // key: 單字小寫，value: { word, sentence, addedAt }
 
 function loadMarkedWords(cb) {
@@ -590,68 +639,47 @@ function refreshMarkedHighlight() {
   });
 }
 
-function onContextMenuKeydown(e) {
-  if (e.key === "Escape") removeContextMenu();
-}
-
-function removeContextMenu() {
-  const menu = document.getElementById("zerostudy-context-menu");
-  if (menu) menu.remove();
-  document.removeEventListener("click", removeContextMenu, true);
-  document.removeEventListener("keydown", onContextMenuKeydown, true);
-}
-
-function toggleMarkedWord(wordEl) {
-  const word = wordEl.textContent.trim();
-  const key = word.toLowerCase();
-
-  if (markedWordsMap.has(key)) {
-    markedWordsMap.delete(key);
-  } else {
-    const sentence = wordEl.closest(".ytp-caption-segment")?.textContent?.trim() || "";
-    markedWordsMap.set(key, { word, sentence, addedAt: Date.now() });
-  }
-
+function markWordAsLearning(word, sentence) {
+  const key = (word || "").trim().toLowerCase();
+  if (!key) return;
+  markedWordsMap.set(key, { word: word.trim(), sentence: sentence || "", addedAt: Date.now() });
   saveMarkedWords();
   refreshMarkedHighlight();
 }
 
-function showWordContextMenu(x, y, wordEl) {
-  removeContextMenu();
-  const key = wordEl.textContent.trim().toLowerCase();
-  const isMarked = markedWordsMap.has(key);
-
-  const menu = document.createElement("div");
-  menu.id = "zerostudy-context-menu";
-  menu.className = "zerostudy-context-menu";
-
-  const item = document.createElement("div");
-  item.className = "zerostudy-context-menu-item";
-  item.textContent = isMarked ? "取消標記「學習中」" : "標記為「學習中」";
-  item.addEventListener("click", () => {
-    toggleMarkedWord(wordEl);
-    removeContextMenu();
-  });
-
-  menu.appendChild(item);
-  document.body.appendChild(menu);
-
-  const maxLeft = window.innerWidth - menu.offsetWidth - 8;
-  const maxTop = window.innerHeight - menu.offsetHeight - 8;
-  menu.style.left = Math.min(x, Math.max(8, maxLeft)) + "px";
-  menu.style.top = Math.min(y, Math.max(8, maxTop)) + "px";
-
-  setTimeout(() => {
-    document.addEventListener("click", removeContextMenu, true);
-    document.addEventListener("keydown", onContextMenuKeydown, true);
-  }, 0);
+function spawnCollectSparkles(box) {
+  const count = 10;
+  for (let i = 0; i < count; i++) {
+    const sparkle = document.createElement("span");
+    sparkle.className = "my-card-sparkle";
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.4;
+    const distance = 36 + Math.random() * 28;
+    sparkle.style.setProperty("--tx", Math.cos(angle) * distance + "px");
+    sparkle.style.setProperty("--ty", Math.sin(angle) * distance + "px");
+    box.appendChild(sparkle);
+  }
 }
 
-document.addEventListener("contextmenu", (e) => {
-  const wordEl = e.target.closest(".my-word");
-  if (!wordEl) return;
+function playCollectAnimation(box) {
+  if (box.classList.contains("is-collecting")) return; // 避免連續雙擊重複觸發
+  box.classList.add("is-collecting");
+  spawnCollectSparkles(box);
+
+  setTimeout(() => {
+    box.style.display = "none";
+    box.classList.remove("is-collecting");
+    box.querySelectorAll(".my-card-sparkle").forEach((s) => s.remove());
+  }, 800); // 跟 content.css 裡 shake + flyup 動畫的總時長對齊
+}
+
+document.addEventListener("dblclick", (e) => {
+  const box = document.getElementById("my-translate-box");
+  if (!box || box.style.display === "none" || !box.contains(e.target)) return;
+  if (!currentLookupText) return;
   e.preventDefault();
-  showWordContextMenu(e.clientX, e.clientY, wordEl);
+
+  markWordAsLearning(currentLookupText, currentLookupSentence);
+  playCollectAnimation(box);
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
