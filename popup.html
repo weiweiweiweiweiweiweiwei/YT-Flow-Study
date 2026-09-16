@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      width: 220px;
+      font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+      padding: 14px;
+    }
+    h3 {
+      margin: 0 0 10px;
+      font-size: 14px;
+    }
+    .size-row {
+      display: flex;
+      gap: 6px;
+    }
+    .size-btn {
+      flex: 1;
+      padding: 8px 0;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fafafa;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .size-btn:hover {
+      background: #f0f0f0;
+    }
+    .size-btn.active {
+      background: #1a1a1a;
+      color: #fff;
+      border-color: #1a1a1a;
+    }
+    p {
+      color: #888;
+      font-size: 12px;
+      margin-top: 10px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <h3>翻譯框框大小</h3>
+  <div class="size-row" id="sizeRow">
+    <button class="size-btn" data-size="75">75%</button>
+    <button class="size-btn" data-size="100">100%</button>
+    <button class="size-btn" data-size="150">150%</button>
+    <button class="size-btn" data-size="200">200%</button>
+  </div>
+  <p>點字幕單字或選取片語時跳出的翻譯小框框，會套用這個大小（立即生效，不用重新整理）。</p>
+  <script src="popup.js"></script>
+</body>
+</html>

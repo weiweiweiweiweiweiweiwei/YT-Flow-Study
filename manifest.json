@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "MyWordLookup",
+  "version": "1.0",
+  "description": "在 YouTube 字幕上點字或選取片語，即時顯示翻譯並自動儲存",
+  "permissions": ["storage", "activeTab", "tabs"],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://translate.googleapis.com/*",
+    "https://translate.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "翻譯框框大小設定"
+  }
+}

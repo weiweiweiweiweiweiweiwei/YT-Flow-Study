@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <title>我的學習面板</title>
+  <link rel="stylesheet" href="review.css" />
+</head>
+<body>
+  <div class="page">
+    <h1>我的學習面板</h1>
+
+    <section class="stats-row" id="statsRow">
+      <div class="stat-card">
+        <div class="stat-value" id="totalWordsValue">0</div>
+        <div class="stat-label">已收藏單字</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="todayMinutesValue">0</div>
+        <div class="stat-label">今日沉浸分鐘</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="totalMinutesValue">0</div>
+        <div class="stat-label">累積沉浸分鐘</div>
+      </div>
+    </section>
+
+    <section class="chart-section">
+      <h2>最近 7 天沉浸時數</h2>
+      <div class="bar-chart" id="barChart"></div>
+    </section>
+
+    <section class="words-section">
+      <h2>我的單字</h2>
+      <div class="word-list" id="wordList"></div>
+    </section>
+  </div>
+  <script src="review.js"></script>
+</body>
+</html>

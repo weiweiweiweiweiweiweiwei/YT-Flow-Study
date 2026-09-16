@@ -1,0 +1,53 @@
+/* 單字底線提示 */
+.my-word {
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.6);
+}
+.my-word:hover {
+  background: rgba(255, 255, 0, 0.25);
+}
+
+/* 讓字幕文字可以像一般網頁文字一樣被選取（YouTube 預設會擋掉） */
+.ytp-caption-window-container,
+.ytp-caption-segment {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+.ytp-caption-segment::selection,
+.my-word::selection {
+  background: rgba(59, 130, 246, 0.55);
+  color: #fff;
+}
+
+/* ---------- 翻譯小框框：只顯示單字/片語 + 翻譯，沒有其他東西 ---------- */
+:root {
+  --my-box-scale: 1;
+}
+#my-translate-box {
+  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  background: #ffffff;
+  color: #1a1a1a;
+  border-radius: 10px;
+  padding: calc(10px * var(--my-box-scale)) calc(14px * var(--my-box-scale));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  max-width: calc(280px * var(--my-box-scale));
+  z-index: 2147483647;
+  pointer-events: auto;
+}
+
+.my-box-original {
+  font-size: calc(17px * var(--my-box-scale));
+  font-weight: 700;
+  margin-bottom: 2px;
+  word-break: break-word;
+}
+
+.my-box-translated {
+  font-size: calc(14px * var(--my-box-scale));
+  color: #333;
+}
+
+.my-box-loading {
+  font-size: calc(13px * var(--my-box-scale));
+  color: #888;
+}
