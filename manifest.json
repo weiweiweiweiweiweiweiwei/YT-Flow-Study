@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "MyWordLookup",
+  "name": "FlowStudy",
   "version": "1.0",
   "description": "在 YouTube 字幕上點字或選取片語，即時顯示翻譯並自動儲存",
   "permissions": ["storage", "activeTab", "tabs"],
