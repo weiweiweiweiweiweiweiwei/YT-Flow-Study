@@ -2,37 +2,61 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <title>我的學習面板</title>
+  <title>FlowStudy 學習面板</title>
   <link rel="stylesheet" href="review.css" />
 </head>
 <body>
-  <div class="page">
-    <h1>我的學習面板</h1>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-logo">FlowStudy</div>
+      <nav class="sidebar-nav">
+        <a class="sidebar-link active" href="review.html">首頁</a>
+      </nav>
+    </aside>
 
-    <section class="stats-row" id="statsRow">
-      <div class="stat-card">
-        <div class="stat-value" id="totalWordsValue">0</div>
-        <div class="stat-label">已收藏單字</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value" id="todayMinutesValue">0</div>
-        <div class="stat-label">今日沉浸分鐘</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value" id="totalMinutesValue">0</div>
-        <div class="stat-label">累積沉浸分鐘</div>
-      </div>
-    </section>
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">首頁</h1>
+          <p class="topbar-sub">歡迎回來！<span id="todayDateLabel"></span></p>
+        </div>
+        <a class="words-link" href="review.html?view=words" target="_blank" rel="noopener">查看學習中單字 →</a>
+      </header>
 
-    <section class="chart-section">
-      <h2>最近 7 天沉浸時數</h2>
-      <div class="bar-chart" id="barChart"></div>
-    </section>
+      <section id="homeView">
+        <div class="cards-row">
+          <div class="card goal-card">
+            <div class="card-label">今日沉浸分鐘數</div>
+            <div class="goal-big-value" id="todayMinutesValue">0</div>
+            <div class="progress-track">
+              <div class="progress-fill" id="goalProgressFill" style="width: 0%"></div>
+            </div>
+            <div class="goal-meta-row">
+              <span id="goalMinutesLabel">0 / 30 mins</span>
+              <span id="goalRemainingText"></span>
+            </div>
+            <div class="streak-row">
+              🔥 連續達標 <strong id="streakValue">0</strong> 天
+            </div>
+          </div>
 
-    <section class="words-section">
-      <h2>我的單字</h2>
-      <div class="word-list" id="wordList"></div>
-    </section>
+          <div class="card total-card">
+            <div class="card-label">總沉浸時數</div>
+            <div class="total-big-value" id="totalTimeValue">0 m</div>
+          </div>
+        </div>
+
+        <section class="chart-section">
+          <h2>最近 7 天沉浸時數</h2>
+          <div class="chart-legend"><span class="legend-dot"></span>沉浸時間</div>
+          <div class="bar-chart" id="barChart"></div>
+        </section>
+      </section>
+
+      <section id="wordsView">
+        <div class="word-list" id="wordList"></div>
+      </section>
+    </main>
   </div>
   <script src="review.js"></script>
 </body>

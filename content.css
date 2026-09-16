@@ -51,3 +51,93 @@
   font-size: calc(13px * var(--my-box-scale));
   color: #888;
 }
+
+/* ---------- 沉浸計時器膠囊按鈕（播放器控制列） ---------- */
+.zerostudy-player-controls {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  margin-right: 8px;
+}
+.zerostudy-immersion-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px 0 10px;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: rgb(209, 213, 219);
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  transition: background 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+}
+.zerostudy-immersion-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.zerostudy-immersion-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgb(156, 163, 175);
+  flex-shrink: 0;
+}
+.zerostudy-immersion-btn.is-active {
+  color: #fff;
+  background: #3b82f6;
+  box-shadow: 0 3px 12px rgba(59, 130, 246, 0.45);
+}
+.zerostudy-immersion-btn.is-active:hover {
+  background: #2f6fe0;
+}
+.zerostudy-immersion-btn.is-active .zerostudy-immersion-dot {
+  background: rgba(255, 255, 255, 0.5);
+}
+.zerostudy-immersion-label {
+  min-width: 1.6em;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 沉浸模式開啟時，隱藏右側推薦影片欄位，專注在字幕上 */
+html.zerostudy-immersion-active #secondary,
+html.zerostudy-immersion-active #related,
+html.zerostudy-immersion-active ytd-watch-next-secondary-results-renderer {
+  display: none !important;
+}
+
+/* 已標記「學習中」的單字：底線 + 淡色底，一眼就能認出來 */
+.my-word.my-word-marked {
+  border-bottom-style: solid;
+  border-bottom-color: #f0ad4e;
+  background: rgba(240, 173, 78, 0.18);
+  border-radius: 2px;
+}
+
+/* 右鍵字幕單字跳出的小選單：標記／取消標記「學習中」 */
+.zerostudy-context-menu {
+  position: fixed;
+  z-index: 2147483647;
+  background: #ffffff;
+  color: #1a1a1a;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  font-size: 13px;
+  padding: 4px;
+  min-width: 160px;
+}
+.zerostudy-context-menu-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.zerostudy-context-menu-item:hover {
+  background: #f0f0f0;
+}

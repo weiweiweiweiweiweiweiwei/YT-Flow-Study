@@ -3,6 +3,10 @@
 let wasPlayingBeforeHover = false;
 let actionPaused = false; // 使用者點單字／選取片語查詢時設為 true，避免滑鼠移開字幕就自動續播
 
+function fmtDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
 // ---------- 翻譯框框大小（在擴充功能圖示的小面板裡設定：75/100/150/200%） ----------
 chrome.storage.local.get("boxScale", ({ boxScale }) => {
   document.documentElement.style.setProperty("--my-box-scale", (boxScale || 100) / 100);
@@ -26,6 +30,7 @@ function wrapWords(el) {
 
 const observer = new MutationObserver(() => {
   document.querySelectorAll(".ytp-caption-segment").forEach(wrapWords);
+  refreshMarkedHighlight();
 });
 observer.observe(document.body, {
   childList: true,
@@ -76,6 +81,26 @@ document.addEventListener(
   },
   true
 );
+
+// ---------- 滑鼠多媒體鍵（播放/暫停二合一）雙向切換 ----------
+// 有些滑鼠的側鍵會送出標準多媒體鍵事件（MediaPlayPause / MediaPlay / MediaPause）。
+// 原本的邏輯只處理「暫停 -> 播放」這個方向，導致影片播放中按同一顆鍵沒有反應。
+// 這裡改成：不管目前是播放還是暫停，按下都能正確切換到相反狀態。
+const MEDIA_TOGGLE_KEYS = new Set(["MediaPlayPause", "MediaPlay", "MediaPause"]);
+document.addEventListener("keydown", (e) => {
+  if (!MEDIA_TOGGLE_KEYS.has(e.key) && !MEDIA_TOGGLE_KEYS.has(e.code)) return;
+  const video = getVideoEl();
+  if (!video) return;
+  e.preventDefault();
+
+  if (video.paused) {
+    actionPaused = false;
+    video.play().catch(() => {});
+  } else {
+    actionPaused = true;
+    video.pause();
+  }
+});
 
 // ---------- 翻譯小框框：只顯示在點擊的單字（或選取的片語）正上方 ----------
 function ensureBox() {
@@ -387,6 +412,257 @@ document.addEventListener("keydown", (e) => {
     video.currentTime = subtitleCues[idx + 1].start;
   }
 });
+
+// ==================== 沉浸計時器（播放器控制列膠囊按鈕） ====================
+//
+// 顯示邏輯（Session，畫面上看到的數字）：
+//   - 只在「沉浸模式開啟 + 影片播放中」時走動，用真實時間（Date.now() 差值）累計，
+//     所以調整播放速度（0.5x / 2x）不會影響計時。
+//   - 影片暫停（含滑鼠移到字幕自動暫停、查字）時，畫面數字停住但不歸零。
+//   - 手動關閉或重新開啟沉浸模式時，畫面數字才會歸零重新算。
+//
+// 底層累計邏輯（Global，寫進 storage 的今日 / 總計秒數）：
+//   - 不管 Session 有沒有歸零，只要真的累積到的秒數，都會即時寫回
+//     immersion:YYYY-MM-DD 與 immersion_total_seconds，不會因為使用者手動關閉而消失。
+//   - 切到背景分頁時 setInterval 可能被瀏覽器降頻，所以用時間戳記差值而不是「tick 次數」
+//     來計算經過秒數，恢復到前景時會自動補上中間經過的時間。
+let immersionActive = false;
+let sessionSeconds = 0;
+let tickAnchor = null; // 開始累計的時間戳記；null 代表目前沒有在累計
+let pendingFlushSeconds = 0; // 還沒寫進 storage 的秒數
+let lastCheckpointMinute = 0; // 上次寫入 F5 復原檢查點時的整分鐘數
+
+function formatImmersionTime(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+function flushPendingSeconds() {
+  if (pendingFlushSeconds <= 0) return;
+  const secondsToFlush = pendingFlushSeconds;
+  pendingFlushSeconds = 0;
+
+  const todayKey = "immersion:" + fmtDate(new Date());
+  chrome.storage.local.get([todayKey, "immersion_total_seconds"], (data) => {
+    chrome.storage.local.set({
+      [todayKey]: (data[todayKey] || 0) + secondsToFlush,
+      immersion_total_seconds: (data.immersion_total_seconds || 0) + secondsToFlush,
+    });
+  });
+}
+
+function maybeSaveSessionCheckpoint() {
+  const currentMinute = Math.floor(sessionSeconds / 60);
+  if (currentMinute > lastCheckpointMinute) {
+    lastCheckpointMinute = currentMinute;
+    chrome.storage.local.set({ immersion_session_seconds: currentMinute * 60 });
+  }
+}
+
+function renderImmersionButton() {
+  const btn = document.getElementById("zerostudy-immersion-btn");
+  if (!btn) return;
+  const label = btn.querySelector(".zerostudy-immersion-label");
+
+  btn.classList.toggle("is-active", immersionActive);
+
+  if (!immersionActive) {
+    label.textContent = "關閉";
+    btn.setAttribute("aria-label", "點擊開始沉浸計時");
+    return;
+  }
+
+  label.textContent = formatImmersionTime(sessionSeconds);
+  const video = getVideoEl();
+  const isPaused = !video || video.paused;
+  btn.setAttribute("aria-label", isPaused ? "影片已暫停，未記錄" : "沉浸計時中");
+}
+
+function onImmersionButtonClick() {
+  immersionActive = !immersionActive;
+  sessionSeconds = 0;
+  lastCheckpointMinute = 0;
+
+  if (!immersionActive) {
+    flushPendingSeconds();
+  }
+  tickAnchor = null;
+
+  chrome.storage.local.set({
+    immersion_active: immersionActive,
+    immersion_session_seconds: 0,
+  });
+
+  document.documentElement.classList.toggle("zerostudy-immersion-active", immersionActive);
+  renderImmersionButton();
+}
+
+function ensureImmersionButton() {
+  const controls = document.querySelector(".ytp-right-controls");
+  if (!controls || document.getElementById("zerostudy-player-controls")) return;
+
+  const wrapper = document.createElement("div");
+  wrapper.id = "zerostudy-player-controls";
+  wrapper.className = "zerostudy-player-controls";
+
+  const btn = document.createElement("button");
+  btn.id = "zerostudy-immersion-btn";
+  btn.type = "button";
+  btn.className = "zerostudy-immersion-btn";
+  btn.innerHTML =
+    '<span class="zerostudy-immersion-dot"></span><span class="zerostudy-immersion-label">關閉</span>';
+  btn.addEventListener("click", onImmersionButtonClick);
+
+  wrapper.appendChild(btn);
+  controls.prepend(wrapper);
+  renderImmersionButton();
+}
+
+function immersionHeartbeatTick() {
+  const video = getVideoEl();
+  const isPlaying = !!(video && !video.paused && !video.ended);
+
+  if (immersionActive && isPlaying) {
+    if (tickAnchor === null) tickAnchor = Date.now();
+    const now = Date.now();
+    const deltaSec = Math.floor((now - tickAnchor) / 1000);
+    if (deltaSec > 0) {
+      sessionSeconds += deltaSec;
+      pendingFlushSeconds += deltaSec;
+      tickAnchor += deltaSec * 1000;
+      maybeSaveSessionCheckpoint();
+      if (pendingFlushSeconds >= 5) flushPendingSeconds();
+    }
+  } else {
+    if (tickAnchor !== null) flushPendingSeconds();
+    tickAnchor = null;
+  }
+
+  renderImmersionButton();
+}
+
+function initImmersionTimer() {
+  chrome.storage.local.get(["immersion_active", "immersion_session_seconds"], (data) => {
+    if (data.immersion_active) {
+      immersionActive = true;
+      sessionSeconds = data.immersion_session_seconds || 0;
+      lastCheckpointMinute = Math.floor(sessionSeconds / 60);
+      document.documentElement.classList.add("zerostudy-immersion-active");
+    }
+    renderImmersionButton();
+  });
+
+  const injectObserver = new MutationObserver(() => ensureImmersionButton());
+  injectObserver.observe(document.body, { childList: true, subtree: true });
+  ensureImmersionButton();
+  document.addEventListener("fullscreenchange", ensureImmersionButton);
+
+  setInterval(immersionHeartbeatTick, 1000);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushPendingSeconds();
+  });
+  window.addEventListener("pagehide", flushPendingSeconds);
+  window.addEventListener("beforeunload", flushPendingSeconds);
+}
+
+// ==================== 單字標記「學習中」（右鍵字幕單字） ====================
+let markedWordsMap = new Map(); // key: 單字小寫，value: { word, sentence, addedAt }
+
+function loadMarkedWords(cb) {
+  chrome.storage.local.get("learningWords", ({ learningWords }) => {
+    markedWordsMap = new Map(Object.entries(learningWords || {}));
+    if (cb) cb();
+  });
+}
+
+function saveMarkedWords() {
+  chrome.storage.local.set({ learningWords: Object.fromEntries(markedWordsMap) });
+}
+
+function refreshMarkedHighlight() {
+  document.querySelectorAll(".my-word").forEach((el) => {
+    const key = el.textContent.trim().toLowerCase();
+    el.classList.toggle("my-word-marked", markedWordsMap.has(key));
+  });
+}
+
+function onContextMenuKeydown(e) {
+  if (e.key === "Escape") removeContextMenu();
+}
+
+function removeContextMenu() {
+  const menu = document.getElementById("zerostudy-context-menu");
+  if (menu) menu.remove();
+  document.removeEventListener("click", removeContextMenu, true);
+  document.removeEventListener("keydown", onContextMenuKeydown, true);
+}
+
+function toggleMarkedWord(wordEl) {
+  const word = wordEl.textContent.trim();
+  const key = word.toLowerCase();
+
+  if (markedWordsMap.has(key)) {
+    markedWordsMap.delete(key);
+  } else {
+    const sentence = wordEl.closest(".ytp-caption-segment")?.textContent?.trim() || "";
+    markedWordsMap.set(key, { word, sentence, addedAt: Date.now() });
+  }
+
+  saveMarkedWords();
+  refreshMarkedHighlight();
+}
+
+function showWordContextMenu(x, y, wordEl) {
+  removeContextMenu();
+  const key = wordEl.textContent.trim().toLowerCase();
+  const isMarked = markedWordsMap.has(key);
+
+  const menu = document.createElement("div");
+  menu.id = "zerostudy-context-menu";
+  menu.className = "zerostudy-context-menu";
+
+  const item = document.createElement("div");
+  item.className = "zerostudy-context-menu-item";
+  item.textContent = isMarked ? "取消標記「學習中」" : "標記為「學習中」";
+  item.addEventListener("click", () => {
+    toggleMarkedWord(wordEl);
+    removeContextMenu();
+  });
+
+  menu.appendChild(item);
+  document.body.appendChild(menu);
+
+  const maxLeft = window.innerWidth - menu.offsetWidth - 8;
+  const maxTop = window.innerHeight - menu.offsetHeight - 8;
+  menu.style.left = Math.min(x, Math.max(8, maxLeft)) + "px";
+  menu.style.top = Math.min(y, Math.max(8, maxTop)) + "px";
+
+  setTimeout(() => {
+    document.addEventListener("click", removeContextMenu, true);
+    document.addEventListener("keydown", onContextMenuKeydown, true);
+  }, 0);
+}
+
+document.addEventListener("contextmenu", (e) => {
+  const wordEl = e.target.closest(".my-word");
+  if (!wordEl) return;
+  e.preventDefault();
+  showWordContextMenu(e.clientX, e.clientY, wordEl);
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.learningWords) {
+    markedWordsMap = new Map(Object.entries(changes.learningWords.newValue || {}));
+    refreshMarkedHighlight();
+  }
+});
+
+loadMarkedWords(refreshMarkedHighlight);
+initImmersionTimer();
 
 loadCaptionCues();
 // YouTube 是 SPA，換片不會整頁重新載入，定期確認是否要重新抓字幕句子資料

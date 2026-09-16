@@ -39,6 +39,23 @@
       margin-top: 10px;
       line-height: 1.5;
     }
+    hr {
+      border: none;
+      border-top: 1px solid #eee;
+      margin: 16px 0;
+    }
+    .goal-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .goal-row input {
+      width: 70px;
+      padding: 6px 8px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -50,6 +67,15 @@
     <button class="size-btn" data-size="200">200%</button>
   </div>
   <p>點字幕單字或選取片語時跳出的翻譯小框框，會套用這個大小（立即生效，不用重新整理）。</p>
+
+  <hr />
+
+  <h3>每日沉浸目標</h3>
+  <div class="goal-row">
+    <input type="number" id="goalInput" min="1" step="1" />
+    <span>分鐘</span>
+  </div>
+  <p>後台首頁的每日目標進度條與連續達標天數，會依這個數字計算。</p>
   <script src="popup.js"></script>
 </body>
 </html>
