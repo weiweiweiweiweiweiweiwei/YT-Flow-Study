@@ -1,5 +1,4 @@
 // 這支程式會被注入到 YouTube 網頁裡執行
-console.log("[FlowStudy] content.js 已注入，擴充功能 ID：", chrome.runtime.id);
 
 let wasPlayingBeforeHover = false;
 let actionPaused = false; // 使用者點單字／選取片語查詢時設為 true，避免滑鼠移開字幕就自動續播
@@ -715,12 +714,9 @@ function saveMarkedWords() {
   // 但如果 chrome.storage.local.set 實際失敗（例如擴充功能重新載入後，
   // 這個分頁還在用舊的、已經失聯的 content script），review.html 就會讀到空的。
   try {
-    const payload = Object.fromEntries(markedWordsMap);
-    chrome.storage.local.set({ learningWords: payload }, () => {
+    chrome.storage.local.set({ learningWords: Object.fromEntries(markedWordsMap) }, () => {
       if (chrome.runtime.lastError) {
         console.error("[FlowStudy] 儲存「學習中」單字失敗：", chrome.runtime.lastError.message);
-      } else {
-        console.log("[FlowStudy] 已寫入 chrome.storage.local，目前收藏的單字：", payload);
       }
     });
   } catch (err) {

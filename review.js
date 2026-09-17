@@ -1,5 +1,3 @@
-console.log("[FlowStudy] review.html 已載入，擴充功能 ID：", chrome.runtime.id);
-
 const DEFAULT_GOAL_MINUTES = 30;
 const GOAL_STOPS = [15, 30, 60, 120, 180]; // 15分鐘 / 30分鐘 / 1小時 / 2小時 / 3小時
 const GOAL_STOP_LABELS = ["15 分鐘", "30 分鐘", "1 小時", "2 小時", "3 小時"];
@@ -106,7 +104,6 @@ function renderHome() {
 // ---------- 收藏單字 ----------
 function renderWords() {
   chrome.storage.local.get("learningWords", ({ learningWords }) => {
-    console.log("[FlowStudy] review.html 讀到的 learningWords：", learningWords);
     const words = Object.entries(learningWords || {}).sort(
       (a, b) => (b[1].addedAt || 0) - (a[1].addedAt || 0)
     );
@@ -187,9 +184,12 @@ document.querySelectorAll(".theme-btn").forEach((btn) => {
 
 function renderCurrentView() {
   const view = getView();
-  document.getElementById("homeView").style.display = view === "home" ? "" : "none";
-  document.getElementById("wordsView").style.display = view === "words" ? "" : "none";
-  document.getElementById("settingsView").style.display = view === "settings" ? "" : "none";
+  // 注意：這裡要明確指定 "block"，不能用空字串 ""。空字串只是清掉 inline
+  // style，元素會退回去看 review.css 裡 #wordsView/#settingsView 預設的
+  // display:none，等於怎麼切都切不出來——這正是單字清單一直顯示不出來的原因。
+  document.getElementById("homeView").style.display = view === "home" ? "block" : "none";
+  document.getElementById("wordsView").style.display = view === "words" ? "block" : "none";
+  document.getElementById("settingsView").style.display = view === "settings" ? "block" : "none";
 
   const titles = { home: "首頁", words: "收藏單字", settings: "設定" };
   document.getElementById("pageTitle").textContent = titles[view];
