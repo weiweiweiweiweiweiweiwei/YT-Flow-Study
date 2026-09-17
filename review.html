@@ -4,18 +4,7 @@
   <meta charset="UTF-8" />
   <title>FlowStudy 學習面板</title>
   <link rel="stylesheet" href="review.css" />
-  <script>
-    // 在畫面畫出來之前先套用主題，避免「先白一下再變深色」的閃爍。
-    // localStorage 是同步的，chrome.storage.local 是非同步的，所以先用
-    // localStorage 做第一時間的判斷，後面 review.js 再用 chrome.storage.local
-    // 校正（例如你在另一個分頁改了設定）。
-    (function () {
-      try {
-        var theme = localStorage.getItem("themePreference") || "light";
-        document.documentElement.setAttribute("data-theme", theme);
-      } catch (e) {}
-    })();
-  </script>
+  <script src="theme-init.js"></script>
 </head>
 <body>
   <div class="layout">
