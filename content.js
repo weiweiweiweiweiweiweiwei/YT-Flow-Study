@@ -444,10 +444,12 @@ async function fetchTracksViaTimedTextList(videoId) {
     const xml = await fetch(`https://www.youtube.com/api/timedtext?type=list&v=${videoId}`).then((r) =>
       r.text()
     );
+    console.log("[FlowStudy] 方法三 timedtext list 原始回應（前 300 字）：", (xml || "").slice(0, 300));
     if (!xml) return null;
 
     const doc = new DOMParser().parseFromString(xml, "text/xml");
     const trackEls = Array.from(doc.getElementsByTagName("track"));
+    console.log("[FlowStudy] 方法三解析出的字幕軌數量：", trackEls.length);
     if (!trackEls.length) return null;
 
     return trackEls.map((el) => {
@@ -458,6 +460,7 @@ async function fetchTracksViaTimedTextList(videoId) {
       return { languageCode: lang, baseUrl: `https://www.youtube.com/api/timedtext?${params.toString()}` };
     });
   } catch (e) {
+    console.warn("[FlowStudy] 方法三發生例外：", e);
     return null;
   }
 }
@@ -472,11 +475,15 @@ async function loadCaptionCues() {
   // 這是播放器本來就有提供的方法，比較不受 YouTube 網頁原始碼格式變動影響。
   try {
     const player = document.getElementById("movie_player");
-    if (player && typeof player.getPlayerResponse === "function") {
+    const hasFn = !!(player && typeof player.getPlayerResponse === "function");
+    console.log("[FlowStudy] 方法一：找到 player 元素？", !!player, "有 getPlayerResponse？", hasFn);
+    if (hasFn) {
       const resp = player.getPlayerResponse();
       tracks = resp?.captions?.playerCaptionsTracklistRenderer?.captionTracks || null;
+      console.log("[FlowStudy] 方法一結果：", tracks);
     }
   } catch (e) {
+    console.warn("[FlowStudy] 方法一發生例外：", e);
     tracks = null;
   }
 
@@ -485,8 +492,11 @@ async function loadCaptionCues() {
     try {
       const html = await fetch(location.href).then((r) => r.text());
       const raw = extractJsonArray(html, "captionTracks");
+      console.log("[FlowStudy] 方法二：網頁原始碼裡有找到 captionTracks 區塊？", !!raw);
       if (raw) tracks = JSON.parse(raw.replace(/\\u0026/g, "&"));
+      console.log("[FlowStudy] 方法二結果：", tracks);
     } catch (e) {
+      console.warn("[FlowStudy] 方法二發生例外：", e);
       tracks = null;
     }
   }
@@ -494,6 +504,7 @@ async function loadCaptionCues() {
   // 方法三（再備用）：改問獨立的 timedtext 列表 API
   if (!tracks || !tracks.length) {
     tracks = await fetchTracksViaTimedTextList(videoId);
+    console.log("[FlowStudy] 方法三結果：", tracks);
   }
 
   if (!tracks || !tracks.length) {
