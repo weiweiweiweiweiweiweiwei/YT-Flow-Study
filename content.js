@@ -361,34 +361,52 @@ function getCurrentCaptionSentence() {
     .join(" ");
 }
 
-let pendingCueText = null;
-let pendingCueStart = 0;
+let lastRawCaptionText = "";
+let sentenceBuffer = "";
+let sentenceBufferStart = null;
 
-// YouTube 自動語音辨識字幕（caps=asr）是「同一行不斷往後長出新字」的方式顯示，
-// 不是整句一次出現——例如畫面會先顯示 "I think"，接著變成 "I think that"，
-// 再變成 "I think that we"...一直長到這句話講完，字幕窗口清空，換下一句從頭開始長。
-// 判斷「這是不是同一句話還在長」的方法：新內容是不是舊內容加了字之後的結果
-// （用 startsWith 判斷），是的話就只更新內容、先不提交；不是的話（代表整個
-// 換了一句新的，或字幕窗口清空了）才把累積好的內容當作一筆完整的斷點提交。
-function commitPendingCue() {
-  if (!pendingCueText) return;
-  lastRecordedCueText = pendingCueText;
+// 實測發現 YouTube 這種自動語音辨識字幕（caps=asr）是「一直往前滑動的視窗」：
+// 舊的字會從前面被擠掉、新的字從後面補上（例如 "...decade of creating on YouTube.
+// Um, I got started" 接著變成 "...on YouTube. Um, I got started in 2017. That's
+// when I published my first YouTube"），不是從空白長成完整一句再清空換下一句。
+// 所以不能再用「新內容是不是舊內容的延伸」判斷，要改成：找出新視窗裡「真正沒看過
+// 的那一小段新字」，把它接到一個持續累積的緩衝區裡，遇到句尾標點（. ! ?）才把
+// 緩衝區內容當作一句完整的斷點提交、重新開始累積下一句。
+function findNewSuffix(oldText, newText) {
+  if (!oldText) return newText;
+  const oldWords = oldText.split(" ");
+  const newWords = newText.split(" ");
+  const maxOverlap = Math.min(oldWords.length, newWords.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap--) {
+    const oldTail = oldWords.slice(oldWords.length - overlap).join(" ");
+    const newHead = newWords.slice(0, overlap).join(" ");
+    if (oldTail === newHead) {
+      return newWords.slice(overlap).join(" ").trim();
+    }
+  }
+  return newText; // 完全沒有重疊，整段都算新的
+}
+
+function flushSentenceBuffer() {
+  if (!sentenceBuffer) return;
+  const text = sentenceBuffer;
+  const start = sentenceBufferStart;
+  sentenceBuffer = "";
+  sentenceBufferStart = null;
+  lastRecordedCueText = text;
 
   // 使用者倒轉/重播過的話，同一段內容、差不多的時間點可能已經記錄過一次了。
   // 這裡用「開始時間很接近 + 文字相同」判斷是不是重複，重複就不要再加一筆，
   // 不然陣列裡會出現時間不是遞增排列的重複項目，導致 a/s/d 在兩個點之間跳來跳去。
-  const isDuplicate = subtitleCues.some(
-    (c) => c.text === pendingCueText && Math.abs(c.start - pendingCueStart) < 1.5
-  );
+  const isDuplicate = subtitleCues.some((c) => c.text === text && Math.abs(c.start - start) < 1.5);
   if (!isDuplicate) {
-    subtitleCues.push({ start: pendingCueStart, text: pendingCueText });
+    subtitleCues.push({ start, text });
     subtitleCues.sort((a, b) => a.start - b.start); // 保證陣列一直照時間先後排序
     if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
-    console.log(`[FlowStudy] 即時記錄新增一句：${pendingCueStart.toFixed(1)}s「${pendingCueText}」`);
+    console.log(`[FlowStudy] 即時記錄新增一句：${start.toFixed(1)}s「${text}」`);
   } else {
-    console.log(`[FlowStudy] 即時記錄判定為重複，跳過：${pendingCueStart.toFixed(1)}s「${pendingCueText}」`);
+    console.log(`[FlowStudy] 即時記錄判定為重複，跳過：${start.toFixed(1)}s「${text}」`);
   }
-  pendingCueText = null;
 }
 
 function recordLiveCaptionCue() {
@@ -400,7 +418,9 @@ function recordLiveCaptionCue() {
     // 舊影片留下的斷點資料就沒有意義了，一併清掉。
     lastRecordedCueVideoId = videoId;
     lastRecordedCueText = null;
-    pendingCueText = null;
+    lastRawCaptionText = "";
+    sentenceBuffer = "";
+    sentenceBufferStart = null;
     if (cuesLoadedForVideoId !== videoId) subtitleCues = [];
   }
 
@@ -412,23 +432,31 @@ function recordLiveCaptionCue() {
   const sentence = getCurrentCaptionSentence();
 
   if (!sentence) {
-    // 字幕窗口清空了：代表上一句真的講完了，把累積的內容提交成一筆完整斷點
-    commitPendingCue();
+    // 字幕窗口清空了：代表這句真的講完了，把緩衝區內容提交成一筆完整斷點
+    flushSentenceBuffer();
+    lastRawCaptionText = "";
     return;
   }
-  if (sentence === pendingCueText) return; // 內容沒變，不用做事
+  if (sentence === lastRawCaptionText) return; // 內容沒變，不用做事
 
-  if (pendingCueText && sentence.startsWith(pendingCueText)) {
-    // 只是原本那句話又長出了幾個字，還是同一句，更新內容但先不提交
-    pendingCueText = sentence;
-    return;
+  const newSuffix = findNewSuffix(lastRawCaptionText, sentence);
+  const hadOverlap = newSuffix.length < sentence.length;
+  lastRawCaptionText = sentence;
+  if (!newSuffix) return;
+
+  if (!hadOverlap && sentenceBuffer) {
+    // 完全沒有重疊：字幕內容整個被換掉了（例如中間有一段沒捕捉到的空檔），
+    // 先把目前緩衝的內容當作一句提交，再從這段新內容重新開始累積。
+    flushSentenceBuffer();
   }
 
-  // 內容整個變了（不是接續），代表換成新的一句：先把累積的舊句子提交，
-  // 再從這裡開始重新累積新的一句。
-  commitPendingCue();
-  pendingCueText = sentence;
-  pendingCueStart = video.currentTime;
+  if (!sentenceBuffer) sentenceBufferStart = video.currentTime;
+  sentenceBuffer = (sentenceBuffer + " " + newSuffix).trim();
+
+  // 新增的這段字尾端有句尾標點，或緩衝區已經累積了不少字，代表一句話講完了。
+  if (/[.!?]\s*$/.test(newSuffix) || sentenceBuffer.split(" ").length > 40) {
+    flushSentenceBuffer();
+  }
 }
 
 // 從整段 HTML 文字裡，找出 "captionTracks": [ ... ] 這個區塊，用括號配對的方式抓出完整陣列
