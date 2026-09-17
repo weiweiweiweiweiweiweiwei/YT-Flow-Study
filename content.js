@@ -103,7 +103,12 @@ function syncMediaSessionPlaybackState() {
   navigator.mediaSession.playbackState = video && !video.paused ? "playing" : "paused";
 }
 
-if ("mediaSession" in navigator) {
+// YouTube 頁面自己也會註冊 play/pause 的 Media Session handler，而且會在換片、
+// 廣告開始/結束等時機重新設定一次，把我們的 handler 蓋掉。setActionHandler 沒有
+// 「疊加」機制，後設定的會直接取代前面的，所以我們沒辦法只設定一次就永久生效，
+// 必須定期（每次心跳 tick）重新搶回來，確保大部分時間都是我們的 handler 在作用。
+function claimMediaSessionHandlers() {
+  if (!("mediaSession" in navigator)) return;
   navigator.mediaSession.setActionHandler("play", () => {
     const video = getVideoEl();
     if (!video) return;
@@ -116,7 +121,11 @@ if ("mediaSession" in navigator) {
     actionPaused = true;
     video.pause();
   });
-} else {
+}
+
+claimMediaSessionHandlers();
+
+if (!("mediaSession" in navigator)) {
   // 少數不支援 Media Session API 的環境，退回用 keydown 偵測多媒體鍵
   const MEDIA_TOGGLE_KEYS = new Set(["MediaPlayPause", "MediaPlay", "MediaPause"]);
   document.addEventListener("keydown", (e) => {
@@ -210,10 +219,24 @@ document.addEventListener("keydown", (e) => {
 let currentLookupText = null;
 let currentLookupSentence = ""; // 目前查詢的單字/片語所在的整句字幕，雙擊收藏時一併存起來當作上下文
 
+let currentAudio = null;
+let pronunciationRequestId = 0;
+
 function playPronunciation(text) {
+  // 連續點好幾個單字時，新的查詢要立刻打斷還在播放/還在等待回應的舊發音，
+  // 不然舊的語音請求晚到達時還是會播，疊在一起變成一團亂。
+  const requestId = ++pronunciationRequestId;
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+
   chrome.runtime.sendMessage({ type: "speak", text }, (result) => {
+    if (requestId !== pronunciationRequestId) return; // 已經有更新的查詢了，這個舊回應不要播
     if (result && result.audioDataUrl) {
-      new Audio(result.audioDataUrl).play().catch(() => {});
+      const audio = new Audio(result.audioDataUrl);
+      currentAudio = audio;
+      audio.play().catch(() => {});
     }
   });
 }
@@ -501,7 +524,7 @@ function maybeSaveSessionCheckpoint() {
   const currentMinute = Math.floor(sessionSeconds / 60);
   if (currentMinute > lastCheckpointMinute) {
     lastCheckpointMinute = currentMinute;
-    chrome.storage.local.set({ immersion_session_seconds: currentMinute * 60 });
+    chrome.storage.session.set({ immersion_session_seconds: currentMinute * 60 });
   }
 }
 
@@ -534,7 +557,7 @@ function onImmersionButtonClick() {
   }
   tickAnchor = null;
 
-  chrome.storage.local.set({
+  chrome.storage.session.set({
     immersion_active: immersionActive,
     immersion_session_seconds: 0,
   });
@@ -571,6 +594,7 @@ function immersionHeartbeatTick() {
   // 保險機制：萬一有漏接的 play/pause 事件（例如影片元素被 YouTube 換掉），
   // 每秒都順便校正一次 Media Session 回報的播放狀態，避免多媒體鍵長期對不起來。
   syncMediaSessionPlaybackState();
+  claimMediaSessionHandlers(); // 每秒重新搶回 handler，避免被 YouTube 自己的程式碼蓋掉
 
   if (immersionActive && isPlaying) {
     if (tickAnchor === null) tickAnchor = Date.now();
@@ -592,7 +616,11 @@ function immersionHeartbeatTick() {
 }
 
 function initImmersionTimer() {
-  chrome.storage.local.get(["immersion_active", "immersion_session_seconds"], (data) => {
+  // 注意：這裡特意用 chrome.storage.session，不是 chrome.storage.local。
+  // session 儲存區的資料在「重新整理分頁 / SPA 換片」時會保留（所以 F5 復原機制才有用），
+  // 但只要整個瀏覽器關掉重開，就會自動清空——這樣昨晚忘記關閉沉浸模式，
+  // 今天早上重開機再看影片時，畫面上的數字才會正確從 0:00 開始，不會沿用昨天的殘值。
+  chrome.storage.session.get(["immersion_active", "immersion_session_seconds"], (data) => {
     if (data.immersion_active) {
       immersionActive = true;
       sessionSeconds = data.immersion_session_seconds || 0;

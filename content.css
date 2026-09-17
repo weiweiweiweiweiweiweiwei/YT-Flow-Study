@@ -33,7 +33,8 @@
   max-width: calc(280px * var(--my-box-scale));
   z-index: 2147483647;
   pointer-events: auto;
-  user-select: none; /* 雙擊是「收藏」手勢，不要被瀏覽器當成選字 */
+  /* 特意不設 user-select: none —— 使用者需要能夠拖曳選取框裡的英文單字，
+     複製到別處做進一步查詢。拖曳選字跟雙擊收藏是兩種不同手勢，彼此不衝突。 */
 }
 
 .my-box-original {

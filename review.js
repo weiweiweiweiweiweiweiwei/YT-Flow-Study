@@ -135,6 +135,7 @@ function init() {
   document.getElementById("homeView").style.display = view === "home" ? "" : "none";
   document.getElementById("wordsView").style.display = view === "words" ? "" : "none";
   document.getElementById("pageTitle").textContent = view === "words" ? "學習中單字" : "首頁";
+  document.querySelector(".sidebar-link").classList.toggle("active", view === "home");
 
   if (view === "home") {
     renderHome();

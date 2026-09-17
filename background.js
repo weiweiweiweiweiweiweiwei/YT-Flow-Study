@@ -1,5 +1,12 @@
 // 這支負責在背景處理翻譯查詢，改用 Google 翻譯，免金鑰、免存個人學習紀錄。
 
+// chrome.storage.session 預設只有 extension 頁面（background/popup）能存取，
+// content script 拿不到。這裡把存取範圍打開，讓 content.js 也能直接讀寫，
+// 用來存放沉浸計時器的「本次瀏覽器工作階段」狀態（重整頁面會保留，但整個瀏覽器關掉重開就會清空）。
+if (chrome.storage.session && chrome.storage.session.setAccessLevel) {
+  chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS" }).catch(() => {});
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "translate") {
     translateText(msg.text).then(sendResponse);
