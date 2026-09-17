@@ -373,8 +373,18 @@ let pendingCueStart = 0;
 function commitPendingCue() {
   if (!pendingCueText) return;
   lastRecordedCueText = pendingCueText;
-  subtitleCues.push({ start: pendingCueStart, text: pendingCueText });
-  if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
+
+  // 使用者倒轉/重播過的話，同一段內容、差不多的時間點可能已經記錄過一次了。
+  // 這裡用「開始時間很接近 + 文字相同」判斷是不是重複，重複就不要再加一筆，
+  // 不然陣列裡會出現時間不是遞增排列的重複項目，導致 a/s/d 在兩個點之間跳來跳去。
+  const isDuplicate = subtitleCues.some(
+    (c) => c.text === pendingCueText && Math.abs(c.start - pendingCueStart) < 1.5
+  );
+  if (!isDuplicate) {
+    subtitleCues.push({ start: pendingCueStart, text: pendingCueText });
+    subtitleCues.sort((a, b) => a.start - b.start); // 保證陣列一直照時間先後排序
+    if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
+  }
   pendingCueText = null;
 }
 
@@ -481,13 +491,99 @@ async function fetchTracksViaTimedTextList(videoId) {
   }
 }
 
+// 方法零（最優先）：直接問 YouTube 網頁本身「顯示字幕稿」那個面板實際呼叫的
+// 內部 API（InnerTube get_transcript）。這是 YouTube 自己的字幕稿功能在用的
+// 端點，理論上比舊版 timedtext 端點更不容易被伺服器擋下來——畢竟擋了等於
+// YouTube 自己的字幕稿功能也會壞掉。所需的 API 金鑰跟請求參數，都直接從
+// 網頁原始碼裡挖（跟方法二共用同一份抓回來的原始碼，不用多打一次）。
+async function fetchCuesViaInnerTube(videoId, html) {
+  try {
+    const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
+    const clientVersionMatch = html.match(/"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"/);
+    const paramsMatch = html.match(/"getTranscriptEndpoint":\s*\{\s*"params":"([^"]+)"/);
+
+    console.log(
+      "[FlowStudy] 方法零：找到 API 金鑰？",
+      !!apiKeyMatch,
+      "找到字幕稿 params？",
+      !!paramsMatch
+    );
+    if (!apiKeyMatch || !paramsMatch) return null;
+
+    const body = {
+      context: {
+        client: {
+          clientName: "WEB",
+          clientVersion: clientVersionMatch ? clientVersionMatch[1] : "2.20240101.00.00",
+        },
+      },
+      params: paramsMatch[1],
+    };
+
+    const res = await fetch(`https://www.youtube.com/youtubei/v1/get_transcript?key=${apiKeyMatch[1]}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    console.log("[FlowStudy] 方法零回應：", data);
+
+    const segments =
+      data?.actions?.[0]?.updateEngagementPanelAction?.content?.transcriptRenderer?.content
+        ?.transcriptSearchPanelRenderer?.body?.transcriptSegmentListRenderer?.initialSegments || [];
+
+    const cues = segments
+      .map((seg) => {
+        const r = seg.transcriptSegmentRenderer;
+        if (!r) return null;
+        const text = (r.snippet?.runs || []).map((run) => run.text).join("");
+        const startMs = Number(r.startMs);
+        if (!text || Number.isNaN(startMs)) return null;
+        return { start: startMs / 1000, text: text.trim() };
+      })
+      .filter(Boolean);
+
+    console.log("[FlowStudy] 方法零解析出的字幕句數：", cues.length);
+    return cues.length ? cues : null;
+  } catch (e) {
+    console.warn("[FlowStudy] 方法零發生例外：", e);
+    return null;
+  }
+}
+
 async function loadCaptionCues() {
   const videoId = getVideoId();
   if (!videoId || videoId === cuesLoadedForVideoId) return;
 
+  // 網頁原始碼會被方法零跟方法二共用，只抓一次。
+  let pageHtml = null;
+  async function getPageHtml() {
+    if (pageHtml === null) {
+      try {
+        pageHtml = await fetch(location.href).then((r) => r.text());
+      } catch (e) {
+        pageHtml = "";
+      }
+    }
+    return pageHtml;
+  }
+
+  const html0 = await getPageHtml();
+  if (html0) {
+    const cuesFromInnerTube = await fetchCuesViaInnerTube(videoId, html0);
+    if (cuesFromInnerTube && cuesFromInnerTube.length) {
+      subtitleCues = cuesFromInnerTube;
+      cuesLoadedForVideoId = videoId;
+      console.log(
+        `[FlowStudy] 方法零成功，已載入 ${subtitleCues.length} 句完整字幕稿（含尚未播放的句子），a/s/d 可以用了`
+      );
+      return;
+    }
+  }
+
   let tracks = null;
 
-  // 方法一（優先）：直接問 YouTube 播放器物件本身要目前這部影片的字幕軌清單，
+  // 方法一（備用）：直接問 YouTube 播放器物件本身要目前這部影片的字幕軌清單，
   // 這是播放器本來就有提供的方法，比較不受 YouTube 網頁原始碼格式變動影響。
   try {
     const player = document.getElementById("movie_player");
@@ -506,7 +602,7 @@ async function loadCaptionCues() {
   // 方法二（備用）：方法一失敗的話，退回去從網頁原始碼裡挖字幕資料
   if (!tracks || !tracks.length) {
     try {
-      const html = await fetch(location.href).then((r) => r.text());
+      const html = await getPageHtml();
       const raw = extractJsonArray(html, "captionTracks");
       console.log("[FlowStudy] 方法二：網頁原始碼裡有找到 captionTracks 區塊？", !!raw);
       if (raw) tracks = JSON.parse(raw.replace(/\\u0026/g, "&"));
