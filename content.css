@@ -64,17 +64,20 @@
 .zerostudy-immersion-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 12px 0 10px;
+  gap: 7px;
+  height: 30px;
+  padding: 0 13px 0 11px;
   border: none;
   border-radius: 999px;
   cursor: pointer;
-  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-  color: rgb(209, 213, 219);
+  /* YouTube 自己的播放器按鈕樣式選擇器有時候比我們的更精確，所以字重/字級
+     這幾個屬性特意加 !important，確保我們的樣式一定會贏，不會被蓋掉。 */
+  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", Roboto, Arial, sans-serif !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.2px;
+  line-height: 1 !important;
+  color: rgb(209, 213, 219) !important;
   background: rgba(255, 255, 255, 0.12);
   backdrop-filter: blur(10px);
   transition: background 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
@@ -90,7 +93,7 @@
   flex-shrink: 0;
 }
 .zerostudy-immersion-btn.is-active {
-  color: #fff;
+  color: #fff !important;
   background: #3b82f6;
   box-shadow: 0 3px 12px rgba(59, 130, 246, 0.45);
 }

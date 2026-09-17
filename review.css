@@ -102,6 +102,9 @@ body {
   flex: 1;
   padding: 32px 40px 80px;
   max-width: 860px;
+  /* .main 是 flex item，光靠 max-width 只會讓它變窄，不會自動置中——
+     沒有 margin:auto 的話它就是貼著側邊欄左對齊，這正是版面看起來偏左的原因。 */
+  margin: 0 auto;
 }
 
 .topbar {

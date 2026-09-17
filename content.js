@@ -361,6 +361,10 @@ function getCurrentCaptionSentence() {
     .join(" ");
 }
 
+let pendingCueText = null;
+let pendingCueStart = 0;
+let pendingCueTimer = null;
+
 function recordLiveCaptionCue() {
   const videoId = getVideoId();
   if (!videoId) return;
@@ -370,6 +374,8 @@ function recordLiveCaptionCue() {
     // 舊影片留下的斷點資料就沒有意義了，一併清掉。
     lastRecordedCueVideoId = videoId;
     lastRecordedCueText = null;
+    pendingCueText = null;
+    if (pendingCueTimer) clearTimeout(pendingCueTimer);
     if (cuesLoadedForVideoId !== videoId) subtitleCues = [];
   }
 
@@ -379,10 +385,21 @@ function recordLiveCaptionCue() {
   if (!video) return;
 
   const sentence = getCurrentCaptionSentence();
-  if (!sentence || sentence === lastRecordedCueText) return;
-  lastRecordedCueText = sentence;
-  subtitleCues.push({ start: video.currentTime, text: sentence });
-  if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
+  if (!sentence || sentence === lastRecordedCueText || sentence === pendingCueText) return;
+
+  // 字幕常常是一個字一個字慢慢浮現的，不能文字一有變化就立刻當成新的一句，
+  // 不然一整句話會被切成好幾個「半句話」的斷點（這正是先前 a/s/d 跳成
+  // 「跳到上一個字」而不是「跳到上一句」的原因）。等文字停止變化一小段時間
+  // （代表這句字幕已經顯示完整、不會再變了）才真正記錄下來。
+  pendingCueText = sentence;
+  pendingCueStart = video.currentTime;
+  if (pendingCueTimer) clearTimeout(pendingCueTimer);
+  pendingCueTimer = setTimeout(() => {
+    if (pendingCueText !== sentence) return; // 這段等待期間字幕又變了，這次記錄已經過期，不要採用
+    lastRecordedCueText = sentence;
+    subtitleCues.push({ start: pendingCueStart, text: sentence });
+    if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
+  }, 350);
 }
 
 // 從整段 HTML 文字裡，找出 "captionTracks": [ ... ] 這個區塊，用括號配對的方式抓出完整陣列
@@ -419,6 +436,32 @@ function extractJsonArray(text, key) {
   return null;
 }
 
+// 方法三（再備用）：YouTube 有一個獨立的公開 timedtext 列表 API，只要有影片 ID
+// 就能直接問「這部影片有哪些字幕軌」，完全不需要經過播放器物件或網頁原始碼，
+// 前兩個方法都失敗時（通常是 YouTube 調整了播放器物件／頁面格式）用這個頂上。
+async function fetchTracksViaTimedTextList(videoId) {
+  try {
+    const xml = await fetch(`https://www.youtube.com/api/timedtext?type=list&v=${videoId}`).then((r) =>
+      r.text()
+    );
+    if (!xml) return null;
+
+    const doc = new DOMParser().parseFromString(xml, "text/xml");
+    const trackEls = Array.from(doc.getElementsByTagName("track"));
+    if (!trackEls.length) return null;
+
+    return trackEls.map((el) => {
+      const lang = el.getAttribute("lang_code") || "";
+      const kind = el.getAttribute("kind") || "";
+      const params = new URLSearchParams({ v: videoId, lang });
+      if (kind) params.set("kind", kind);
+      return { languageCode: lang, baseUrl: `https://www.youtube.com/api/timedtext?${params.toString()}` };
+    });
+  } catch (e) {
+    return null;
+  }
+}
+
 async function loadCaptionCues() {
   const videoId = getVideoId();
   if (!videoId || videoId === cuesLoadedForVideoId) return;
@@ -446,6 +489,11 @@ async function loadCaptionCues() {
     } catch (e) {
       tracks = null;
     }
+  }
+
+  // 方法三（再備用）：改問獨立的 timedtext 列表 API
+  if (!tracks || !tracks.length) {
+    tracks = await fetchTracksViaTimedTextList(videoId);
   }
 
   if (!tracks || !tracks.length) {
