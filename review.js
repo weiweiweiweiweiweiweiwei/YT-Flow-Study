@@ -26,25 +26,23 @@ function getView() {
   return new URLSearchParams(location.search).get("view") === "words" ? "words" : "home";
 }
 
-// 連續達標天數：從今天往回數；如果「今天」還沒達到目標，先跳過今天再往回算，
-// 這樣還沒過完的一天不會把前面已經累積的連續紀錄歸零。
-function computeStreak(all, goalMinutes) {
-  const cursor = new Date();
-  const todayMinutes = Math.round((all["immersion:" + fmtDate(cursor)] || 0) / 60);
-  if (todayMinutes < goalMinutes) {
-    cursor.setDate(cursor.getDate() - 1);
-  }
-
-  let streak = 0;
-  for (let i = 0; i < 3650; i++) {
-    const minutes = Math.round((all["immersion:" + fmtDate(cursor)] || 0) / 60);
-    if (minutes < goalMinutes) break;
-    streak++;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return streak;
+// ---------- 分頁切換：全部在同一個頁面內完成，不開新分頁 / 新視窗 ----------
+function navigateTo(view) {
+  const url = view === "words" ? "review.html?view=words" : "review.html";
+  history.pushState({ view }, "", url);
+  renderCurrentView();
 }
 
+document.querySelectorAll(".sidebar-link").forEach((link) => {
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    navigateTo(link.dataset.view);
+  });
+});
+
+window.addEventListener("popstate", renderCurrentView);
+
+// ---------- 首頁：每日目標 / 總時數 / 7 天長條圖 ----------
 function renderHome() {
   chrome.storage.local.get(null, (all) => {
     const goalMinutes = all.dailyGoalMinutes || DEFAULT_GOAL_MINUTES;
@@ -62,7 +60,6 @@ function renderHome() {
     document.getElementById("goalRemainingText").textContent =
       remaining > 0 ? `還差 ${remaining} 分鐘達成今日目標` : "🎉 今日目標已達成！";
 
-    document.getElementById("streakValue").textContent = computeStreak(all, goalMinutes);
     document.getElementById("totalTimeValue").textContent = formatTotalTime(totalSeconds);
 
     const days = [];
@@ -88,6 +85,36 @@ function renderHome() {
   });
 }
 
+// ---------- 每日目標：直接在首頁卡片上編輯，不用跳去 popup ----------
+const goalEditBtn = document.getElementById("goalEditBtn");
+const goalEditRow = document.getElementById("goalEditRow");
+const goalEditInput = document.getElementById("goalEditInput");
+const goalSaveBtn = document.getElementById("goalSaveBtn");
+
+goalEditBtn.addEventListener("click", () => {
+  chrome.storage.local.get("dailyGoalMinutes", ({ dailyGoalMinutes }) => {
+    goalEditInput.value = dailyGoalMinutes || DEFAULT_GOAL_MINUTES;
+    goalEditRow.hidden = false;
+    goalEditInput.focus();
+    goalEditInput.select();
+  });
+});
+
+function saveGoal() {
+  const value = Math.max(1, Number(goalEditInput.value) || DEFAULT_GOAL_MINUTES);
+  chrome.storage.local.set({ dailyGoalMinutes: value }, () => {
+    goalEditRow.hidden = true;
+    renderHome();
+  });
+}
+
+goalSaveBtn.addEventListener("click", saveGoal);
+goalEditInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") saveGoal();
+  if (e.key === "Escape") goalEditRow.hidden = true;
+});
+
+// ---------- 收藏單字 ----------
 function renderWords() {
   chrome.storage.local.get("learningWords", ({ learningWords }) => {
     const words = Object.entries(learningWords || {}).sort(
@@ -96,13 +123,13 @@ function renderWords() {
     const list = document.getElementById("wordList");
 
     if (words.length === 0) {
-      list.innerHTML = `<div class="empty-hint">目前沒有標記「學習中」的單字，在 YouTube 字幕的單字上按右鍵就可以標記。</div>`;
+      list.innerHTML = `<div class="glass-card empty-hint">目前沒有標記「學習中」的單字，去 YouTube 雙擊翻譯彈窗就可以收藏。</div>`;
       return;
     }
 
     list.innerHTML = words
       .map(
-        ([key, w]) => `<div class="word-card">
+        ([key, w]) => `<div class="glass-card word-card" data-key="${key}">
           <div class="word-main">
             <div class="word-title">${w.word}</div>
             ${w.sentence ? `<div class="word-def">${w.sentence}</div>` : ""}
@@ -128,20 +155,26 @@ function renderWords() {
   });
 }
 
-function init() {
-  document.getElementById("todayDateLabel").textContent = " · " + todayLabel();
-
+function renderCurrentView() {
   const view = getView();
   document.getElementById("homeView").style.display = view === "home" ? "" : "none";
   document.getElementById("wordsView").style.display = view === "words" ? "" : "none";
-  document.getElementById("pageTitle").textContent = view === "words" ? "學習中單字" : "首頁";
-  document.querySelector(".sidebar-link").classList.toggle("active", view === "home");
+  document.getElementById("pageTitle").textContent = view === "words" ? "收藏單字" : "首頁";
+  document.querySelectorAll(".sidebar-link").forEach((link) => {
+    link.classList.toggle("active", link.dataset.view === view);
+  });
+  goalEditRow.hidden = true;
 
   if (view === "home") {
     renderHome();
   } else {
     renderWords();
   }
+}
+
+function init() {
+  document.getElementById("todayDateLabel").textContent = " · " + todayLabel();
+  renderCurrentView();
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
