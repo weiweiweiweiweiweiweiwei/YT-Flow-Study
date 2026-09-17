@@ -1,3 +1,5 @@
+console.log("[FlowStudy] review.html 已載入，擴充功能 ID：", chrome.runtime.id);
+
 const DEFAULT_GOAL_MINUTES = 30;
 const GOAL_STOPS = [15, 30, 60, 120, 180]; // 15分鐘 / 30分鐘 / 1小時 / 2小時 / 3小時
 const GOAL_STOP_LABELS = ["15 分鐘", "30 分鐘", "1 小時", "2 小時", "3 小時"];
@@ -104,6 +106,7 @@ function renderHome() {
 // ---------- 收藏單字 ----------
 function renderWords() {
   chrome.storage.local.get("learningWords", ({ learningWords }) => {
+    console.log("[FlowStudy] review.html 讀到的 learningWords：", learningWords);
     const words = Object.entries(learningWords || {}).sort(
       (a, b) => (b[1].addedAt || 0) - (a[1].addedAt || 0)
     );
