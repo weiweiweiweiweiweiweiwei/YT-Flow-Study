@@ -760,8 +760,10 @@ document.addEventListener("keydown", (e) => {
 
   if (key === "s") {
     video.currentTime = subtitleCues[idx].start;
-  } else if (key === "a" && idx > 0) {
-    video.currentTime = subtitleCues[idx - 1].start;
+  } else if (key === "a") {
+    // idx===0 代表這已經是目前記錄到最早的一句，沒有更早的可以跳了——
+    // 這種情況跳到影片開頭（0 秒），而不是完全沒反應，體驗上比較合理。
+    video.currentTime = idx > 0 ? subtitleCues[idx - 1].start : 0;
   } else if (key === "d" && idx < subtitleCues.length - 1) {
     video.currentTime = subtitleCues[idx + 1].start;
   }
