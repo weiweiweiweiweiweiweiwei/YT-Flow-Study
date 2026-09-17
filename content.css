@@ -106,10 +106,12 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 沉浸模式開啟時，隱藏右側推薦影片欄位，專注在字幕上 */
-html.zerostudy-immersion-active #secondary,
-html.zerostudy-immersion-active #related,
-html.zerostudy-immersion-active ytd-watch-next-secondary-results-renderer {
+/* 沉浸模式開啟時，隱藏右側推薦影片欄位，專注在字幕上。
+   刻意排除全螢幕模式（.zerostudy-fullscreen）：全螢幕下 YouTube 自己的版面
+   計算方式不同，強制 display:none 這個欄位會跟它自己的版面邏輯打架、跑版。 */
+html.zerostudy-immersion-active:not(.zerostudy-fullscreen) #secondary,
+html.zerostudy-immersion-active:not(.zerostudy-fullscreen) #related,
+html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-next-secondary-results-renderer {
   display: none !important;
 }
 

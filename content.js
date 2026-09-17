@@ -104,45 +104,49 @@ function syncMediaSessionPlaybackState() {
 }
 
 // YouTube 頁面自己也會註冊 play/pause 的 Media Session handler，而且會在換片、
-// 廣告開始/結束等時機重新設定一次，把我們的 handler 蓋掉。setActionHandler 沒有
-// 「疊加」機制，後設定的會直接取代前面的，所以我們沒辦法只設定一次就永久生效，
-// 必須定期（每次心跳 tick）重新搶回來，確保大部分時間都是我們的 handler 在作用。
-function claimMediaSessionHandlers() {
-  if (!("mediaSession" in navigator)) return;
-  navigator.mediaSession.setActionHandler("play", () => {
-    const video = getVideoEl();
-    if (!video) return;
+// 廣告開始/結束、查字翻譯暫停等時機重新設定一次，把我們的 handler 蓋掉，
+// 導致「有時候有效、有時候完全沒反應」。setActionHandler 沒有疊加機制，
+// 後設定的會直接取代前面的，單靠它不夠可靠。
+//
+// 改用「雙保險 + 去重」：Media Session handler 跟原始 keydown 監聽同時開著，
+// 不管當下是哪一個機制真正接住這次按鍵，都交給同一個 toggleVideoPlayback()
+// 處理；用時間戳記把 250ms 內的重複觸發視為同一次實體按鍵、直接忽略，
+// 這樣不管 Media Session 有沒有被 YouTube 蓋掉，都一定有另一條路徑能生效，
+// 也不會因為兩條路徑「剛好都有效」而變成按一下同時切換兩次、等於沒按到。
+let lastMediaToggleAt = 0;
+const MEDIA_TOGGLE_DEBOUNCE_MS = 250;
+
+function toggleVideoPlayback() {
+  const now = Date.now();
+  if (now - lastMediaToggleAt < MEDIA_TOGGLE_DEBOUNCE_MS) return;
+  lastMediaToggleAt = now;
+
+  const video = getVideoEl();
+  if (!video) return;
+
+  if (video.paused) {
     actionPaused = false;
     video.play().catch(() => {});
-  });
-  navigator.mediaSession.setActionHandler("pause", () => {
-    const video = getVideoEl();
-    if (!video) return;
+  } else {
     actionPaused = true;
     video.pause();
-  });
+  }
+}
+
+function claimMediaSessionHandlers() {
+  if (!("mediaSession" in navigator)) return;
+  navigator.mediaSession.setActionHandler("play", toggleVideoPlayback);
+  navigator.mediaSession.setActionHandler("pause", toggleVideoPlayback);
 }
 
 claimMediaSessionHandlers();
 
-if (!("mediaSession" in navigator)) {
-  // 少數不支援 Media Session API 的環境，退回用 keydown 偵測多媒體鍵
-  const MEDIA_TOGGLE_KEYS = new Set(["MediaPlayPause", "MediaPlay", "MediaPause"]);
-  document.addEventListener("keydown", (e) => {
-    if (!MEDIA_TOGGLE_KEYS.has(e.key) && !MEDIA_TOGGLE_KEYS.has(e.code)) return;
-    const video = getVideoEl();
-    if (!video) return;
-    e.preventDefault();
-
-    if (video.paused) {
-      actionPaused = false;
-      video.play().catch(() => {});
-    } else {
-      actionPaused = true;
-      video.pause();
-    }
-  });
-}
+const MEDIA_TOGGLE_KEYS = new Set(["MediaPlayPause", "MediaPlay", "MediaPause"]);
+document.addEventListener("keydown", (e) => {
+  if (!MEDIA_TOGGLE_KEYS.has(e.key) && !MEDIA_TOGGLE_KEYS.has(e.code)) return;
+  e.preventDefault();
+  toggleVideoPlayback();
+});
 
 // ---------- 翻譯小框框：只顯示在點擊的單字（或選取的片語）正上方 ----------
 function ensureBox() {
@@ -633,7 +637,13 @@ function initImmersionTimer() {
   const injectObserver = new MutationObserver(() => ensureImmersionButton());
   injectObserver.observe(document.body, { childList: true, subtree: true });
   ensureImmersionButton();
-  document.addEventListener("fullscreenchange", ensureImmersionButton);
+  document.addEventListener("fullscreenchange", () => {
+    ensureImmersionButton();
+    // 全螢幕模式下 YouTube 自己的版面計算方式不一樣，強制隱藏推薦影片欄
+    // 會跟它自己的版面邏輯打架、跑版。全螢幕時交給 YouTube 自己的全螢幕
+    // 版面處理就好，我們只在「一般（非全螢幕）模式」隱藏推薦影片。
+    document.documentElement.classList.toggle("zerostudy-fullscreen", !!document.fullscreenElement);
+  });
 
   setInterval(immersionHeartbeatTick, 1000);
 
@@ -657,7 +667,22 @@ function loadMarkedWords(cb) {
 }
 
 function saveMarkedWords() {
-  chrome.storage.local.set({ learningWords: Object.fromEntries(markedWordsMap) });
+  // 這裡特意檢查 chrome.runtime.lastError 並印出來：以前存檔失敗會整個被吞掉，
+  // 畫面上的底線高亮是直接讀記憶體裡的 markedWordsMap，看起來像存成功了，
+  // 但如果 chrome.storage.local.set 實際失敗（例如擴充功能重新載入後，
+  // 這個分頁還在用舊的、已經失聯的 content script），review.html 就會讀到空的。
+  try {
+    chrome.storage.local.set({ learningWords: Object.fromEntries(markedWordsMap) }, () => {
+      if (chrome.runtime.lastError) {
+        console.error("[FlowStudy] 儲存「學習中」單字失敗：", chrome.runtime.lastError.message);
+      }
+    });
+  } catch (err) {
+    console.error(
+      "[FlowStudy] 儲存「學習中」單字時發生例外，這個分頁的擴充功能連線可能已經失效，請整頁重新整理（F5）後再試一次：",
+      err
+    );
+  }
 }
 
 function refreshMarkedHighlight() {
