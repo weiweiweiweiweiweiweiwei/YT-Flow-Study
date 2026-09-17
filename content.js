@@ -817,6 +817,8 @@ function ensureImmersionButton() {
   renderImmersionButton();
 }
 
+let lastImmersionVideoId = null;
+
 function immersionHeartbeatTick() {
   const video = getVideoEl();
   const isPlaying = !!(video && !video.paused && !video.ended);
@@ -825,6 +827,22 @@ function immersionHeartbeatTick() {
   // 每秒都順便校正一次 Media Session 回報的播放狀態，避免多媒體鍵長期對不起來。
   syncMediaSessionPlaybackState();
   claimMediaSessionHandlers(); // 每秒重新搶回 handler，避免被 YouTube 自己的程式碼蓋掉
+
+  // YouTube 是 SPA，換一部影片不會整頁重新載入，content.js 不會重跑，
+  // Session 秒數原本會直接沿用上一部影片的。這裡偵測「影片 ID 變了」，
+  // 換片時主動把畫面上的 Session 數字歸零重算（今日/總計時數不受影響，
+  // 换片前累積的秒數一樣會先寫進去，只是畫面顯示的「這次沉浸了多久」重新算）。
+  const currentVideoId = getVideoId();
+  if (immersionActive && currentVideoId && currentVideoId !== lastImmersionVideoId) {
+    if (lastImmersionVideoId !== null) {
+      flushPendingSeconds();
+      sessionSeconds = 0;
+      lastCheckpointMinute = 0;
+      tickAnchor = null;
+      chrome.storage.session.set({ immersion_session_seconds: 0 });
+    }
+    lastImmersionVideoId = currentVideoId;
+  }
 
   if (immersionActive && isPlaying) {
     if (tickAnchor === null) tickAnchor = Date.now();
