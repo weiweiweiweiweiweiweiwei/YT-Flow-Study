@@ -349,6 +349,7 @@ let subtitleCues = []; // [{ start, text }]，依 start 由小到大排序
 let cuesLoadedForVideoId = null;
 let lastRecordedCueText = null;
 let lastRecordedCueVideoId = null;
+let maxRecordedCueStart = -1; // 目前已經記錄過、最晚的一句開始時間
 
 function getVideoId() {
   return new URLSearchParams(location.search).get("v");
@@ -403,6 +404,7 @@ function flushSentenceBuffer() {
     subtitleCues.push({ start, text });
     subtitleCues.sort((a, b) => a.start - b.start); // 保證陣列一直照時間先後排序
     if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
+    maxRecordedCueStart = Math.max(maxRecordedCueStart, start);
     console.log(`[FlowStudy] 即時記錄新增一句：${start.toFixed(1)}s「${text}」`);
   } else {
     console.log(`[FlowStudy] 即時記錄判定為重複，跳過：${start.toFixed(1)}s「${text}」`);
@@ -421,6 +423,7 @@ function recordLiveCaptionCue() {
     lastRawCaptionText = "";
     sentenceBuffer = "";
     sentenceBufferStart = null;
+    maxRecordedCueStart = -1;
     if (cuesLoadedForVideoId !== videoId) subtitleCues = [];
   }
 
@@ -428,6 +431,19 @@ function recordLiveCaptionCue() {
 
   const video = getVideoEl();
   if (!video) return;
+
+  // 使用者按了 a/s 往回跳、或自己倒轉了進度條：這段內容我們已經記錄過了，
+  // 不要因為重播又把它當成新句子記一次（不然陣列會冒出時間亂序的重複片段，
+  // 造成 a/s/d 在兩個點之間跳來跳去）。等播回「還沒記錄過」的新地方再繼續累積，
+  // 這裡先把緩衝區清空，避免用舊的殘留內容去跟新內容做不正確的字串比對。
+  if (video.currentTime < maxRecordedCueStart - 1) {
+    if (lastRawCaptionText || sentenceBuffer) {
+      lastRawCaptionText = "";
+      sentenceBuffer = "";
+      sentenceBufferStart = null;
+    }
+    return;
+  }
 
   const sentence = getCurrentCaptionSentence();
 
