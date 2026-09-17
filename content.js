@@ -384,6 +384,9 @@ function commitPendingCue() {
     subtitleCues.push({ start: pendingCueStart, text: pendingCueText });
     subtitleCues.sort((a, b) => a.start - b.start); // 保證陣列一直照時間先後排序
     if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
+    console.log(`[FlowStudy] 即時記錄新增一句：${pendingCueStart.toFixed(1)}s「${pendingCueText}」`);
+  } else {
+    console.log(`[FlowStudy] 即時記錄判定為重複，跳過：${pendingCueStart.toFixed(1)}s「${pendingCueText}」`);
   }
   pendingCueText = null;
 }
@@ -695,9 +698,20 @@ document.addEventListener("keydown", (e) => {
   if (key !== "a" && key !== "s" && key !== "d") return;
 
   const video = getVideoEl();
-  if (!video || !subtitleCues.length) return;
+  if (!video || !subtitleCues.length) {
+    console.log(
+      `[FlowStudy] 按了 ${key}，但 subtitleCues 是空的（長度 ${subtitleCues.length}），沒有東西可以跳`
+    );
+    return;
+  }
 
   const idx = findCurrentCueIndex();
+  console.log(
+    `[FlowStudy] 按了 ${key}，目前 subtitleCues 共 ${subtitleCues.length} 筆，目前時間 ${video.currentTime.toFixed(
+      1
+    )}s，判斷 idx=${idx}`,
+    subtitleCues.slice(Math.max(0, idx - 2), idx + 3)
+  );
   if (idx === -1) return;
 
   if (key === "s") {
