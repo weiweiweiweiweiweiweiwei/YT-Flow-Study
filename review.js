@@ -1,4 +1,6 @@
 const DEFAULT_GOAL_MINUTES = 30;
+const GOAL_STOPS = [15, 30, 60, 120, 180]; // 15分鐘 / 30分鐘 / 1小時 / 2小時 / 3小時
+const GOAL_STOP_LABELS = ["15 分鐘", "30 分鐘", "1 小時", "2 小時", "3 小時"];
 
 function fmtDate(d) {
   return d.toISOString().slice(0, 10);
@@ -22,13 +24,27 @@ function formatTotalTime(totalSeconds) {
   return h > 0 ? `${h} h ${m} m` : `${m} m`;
 }
 
+function nearestGoalStopIndex(minutes) {
+  let bestIndex = 0;
+  let bestDiff = Infinity;
+  GOAL_STOPS.forEach((stop, i) => {
+    const diff = Math.abs(stop - minutes);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIndex = i;
+    }
+  });
+  return bestIndex;
+}
+
 function getView() {
-  return new URLSearchParams(location.search).get("view") === "words" ? "words" : "home";
+  const view = new URLSearchParams(location.search).get("view");
+  return view === "words" || view === "settings" ? view : "home";
 }
 
 // ---------- 分頁切換：全部在同一個頁面內完成，不開新分頁 / 新視窗 ----------
 function navigateTo(view) {
-  const url = view === "words" ? "review.html?view=words" : "review.html";
+  const url = view === "home" ? "review.html" : `review.html?view=${view}`;
   history.pushState({ view }, "", url);
   renderCurrentView();
 }
@@ -85,35 +101,6 @@ function renderHome() {
   });
 }
 
-// ---------- 每日目標：直接在首頁卡片上編輯，不用跳去 popup ----------
-const goalEditBtn = document.getElementById("goalEditBtn");
-const goalEditRow = document.getElementById("goalEditRow");
-const goalEditInput = document.getElementById("goalEditInput");
-const goalSaveBtn = document.getElementById("goalSaveBtn");
-
-goalEditBtn.addEventListener("click", () => {
-  chrome.storage.local.get("dailyGoalMinutes", ({ dailyGoalMinutes }) => {
-    goalEditInput.value = dailyGoalMinutes || DEFAULT_GOAL_MINUTES;
-    goalEditRow.hidden = false;
-    goalEditInput.focus();
-    goalEditInput.select();
-  });
-});
-
-function saveGoal() {
-  const value = Math.max(1, Number(goalEditInput.value) || DEFAULT_GOAL_MINUTES);
-  chrome.storage.local.set({ dailyGoalMinutes: value }, () => {
-    goalEditRow.hidden = true;
-    renderHome();
-  });
-}
-
-goalSaveBtn.addEventListener("click", saveGoal);
-goalEditInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") saveGoal();
-  if (e.key === "Escape") goalEditRow.hidden = true;
-});
-
 // ---------- 收藏單字 ----------
 function renderWords() {
   chrome.storage.local.get("learningWords", ({ learningWords }) => {
@@ -123,13 +110,13 @@ function renderWords() {
     const list = document.getElementById("wordList");
 
     if (words.length === 0) {
-      list.innerHTML = `<div class="glass-card empty-hint">目前沒有標記「學習中」的單字，去 YouTube 雙擊翻譯彈窗就可以收藏。</div>`;
+      list.innerHTML = `<div class="card empty-hint">目前沒有標記「學習中」的單字，去 YouTube 雙擊翻譯彈窗就可以收藏。</div>`;
       return;
     }
 
     list.innerHTML = words
       .map(
-        ([key, w]) => `<div class="glass-card word-card" data-key="${key}">
+        ([key, w]) => `<div class="card word-card" data-key="${key}">
           <div class="word-main">
             <div class="word-title">${w.word}</div>
             ${w.sentence ? `<div class="word-def">${w.sentence}</div>` : ""}
@@ -155,35 +142,79 @@ function renderWords() {
   });
 }
 
+// ---------- 設定：每日目標（斷點式滑桿）/ 深淺色模式 ----------
+const goalSlider = document.getElementById("goalSlider");
+const goalSliderValue = document.getElementById("goalSliderValue");
+
+function renderSettings() {
+  chrome.storage.local.get(["dailyGoalMinutes", "themePreference"], (data) => {
+    const goalMinutes = data.dailyGoalMinutes || DEFAULT_GOAL_MINUTES;
+    const index = nearestGoalStopIndex(goalMinutes);
+    goalSlider.value = index;
+    goalSliderValue.textContent = GOAL_STOP_LABELS[index];
+
+    applyTheme(data.themePreference || "light");
+  });
+}
+
+goalSlider.addEventListener("input", () => {
+  goalSliderValue.textContent = GOAL_STOP_LABELS[goalSlider.value];
+});
+goalSlider.addEventListener("change", () => {
+  const minutes = GOAL_STOPS[goalSlider.value];
+  chrome.storage.local.set({ dailyGoalMinutes: minutes });
+});
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  try {
+    localStorage.setItem("themePreference", theme);
+  } catch (e) {}
+  document.getElementById("themeLightBtn").classList.toggle("active", theme === "light");
+  document.getElementById("themeDarkBtn").classList.toggle("active", theme === "dark");
+}
+
+document.querySelectorAll(".theme-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const theme = btn.dataset.themeValue;
+    applyTheme(theme);
+    chrome.storage.local.set({ themePreference: theme });
+  });
+});
+
 function renderCurrentView() {
   const view = getView();
   document.getElementById("homeView").style.display = view === "home" ? "" : "none";
   document.getElementById("wordsView").style.display = view === "words" ? "" : "none";
-  document.getElementById("pageTitle").textContent = view === "words" ? "收藏單字" : "首頁";
+  document.getElementById("settingsView").style.display = view === "settings" ? "" : "none";
+
+  const titles = { home: "首頁", words: "收藏單字", settings: "設定" };
+  document.getElementById("pageTitle").textContent = titles[view];
+
   document.querySelectorAll(".sidebar-link").forEach((link) => {
     link.classList.toggle("active", link.dataset.view === view);
   });
-  goalEditRow.hidden = true;
 
-  if (view === "home") {
-    renderHome();
-  } else {
-    renderWords();
-  }
+  if (view === "home") renderHome();
+  else if (view === "words") renderWords();
+  else renderSettings();
 }
 
 function init() {
   document.getElementById("todayDateLabel").textContent = " · " + todayLabel();
+  // 一開始就把主題套用一次（不用等切到設定頁），確保首頁/收藏單字頁也是正確的深淺色。
+  chrome.storage.local.get("themePreference", ({ themePreference }) => {
+    applyTheme(themePreference || "light");
+  });
   renderCurrentView();
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (getView() === "home") {
-    renderHome();
-  } else if (changes.learningWords) {
-    renderWords();
-  }
+  const view = getView();
+  if (view === "home") renderHome();
+  else if (view === "words" && changes.learningWords) renderWords();
+  else if (view === "settings" && (changes.dailyGoalMinutes || changes.themePreference)) renderSettings();
 });
 
 init();

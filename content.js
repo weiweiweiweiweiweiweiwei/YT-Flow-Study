@@ -31,6 +31,7 @@ function wrapWords(el) {
 const observer = new MutationObserver(() => {
   document.querySelectorAll(".ytp-caption-segment").forEach(wrapWords);
   refreshMarkedHighlight();
+  recordLiveCaptionCue();
 });
 observer.observe(document.body, {
   childList: true,
@@ -335,11 +336,53 @@ document.addEventListener(
 );
 
 // ---------- 句子斷點：a 上一句／s 重播這句／d 下一句 ----------
-let subtitleCues = []; // [{ start, end, text }]
+//
+// 字幕斷點資料有兩個來源：
+// 1. 預先抓取（loadCaptionCues）：直接問 YouTube 要這部影片完整的字幕時間軸，
+//    成功的話可以連「還沒播到」的未來句子都能跳，最完整。但依賴 YouTube 內部
+//    API／網頁格式，這兩個管道都可能因為 YouTube 改版而失效。
+// 2. 即時記錄（recordLiveCaptionCue）：不依賴任何 YouTube 內部格式，單純把
+//    畫面上「已經顯示過」的字幕連同當下播放時間記下來，當作備援。缺點是只能
+//    跳到已經看過（含倒轉回去看過）的句子，沒辦法預先跳到還沒播到的未來句子。
+//    只要預先抓取還沒成功，就持續用這個方式即時累積，讓功能至少堪用。
+let subtitleCues = []; // [{ start, text }]，依 start 由小到大排序
 let cuesLoadedForVideoId = null;
+let lastRecordedCueText = null;
+let lastRecordedCueVideoId = null;
 
 function getVideoId() {
   return new URLSearchParams(location.search).get("v");
+}
+
+function getCurrentCaptionSentence() {
+  return Array.from(document.querySelectorAll(".ytp-caption-window-container .ytp-caption-segment"))
+    .map((el) => el.textContent.trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function recordLiveCaptionCue() {
+  const videoId = getVideoId();
+  if (!videoId) return;
+
+  if (videoId !== lastRecordedCueVideoId) {
+    // 換了一部影片：即時記錄要重新開始；如果這部影片也還沒有成功預先抓取過，
+    // 舊影片留下的斷點資料就沒有意義了，一併清掉。
+    lastRecordedCueVideoId = videoId;
+    lastRecordedCueText = null;
+    if (cuesLoadedForVideoId !== videoId) subtitleCues = [];
+  }
+
+  if (cuesLoadedForVideoId === videoId) return; // 這部影片已經有完整的預先抓取資料，不需要即時記錄
+
+  const video = getVideoEl();
+  if (!video) return;
+
+  const sentence = getCurrentCaptionSentence();
+  if (!sentence || sentence === lastRecordedCueText) return;
+  lastRecordedCueText = sentence;
+  subtitleCues.push({ start: video.currentTime, text: sentence });
+  if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
 }
 
 // 從整段 HTML 文字裡，找出 "captionTracks": [ ... ] 這個區塊，用括號配對的方式抓出完整陣列
@@ -406,39 +449,39 @@ async function loadCaptionCues() {
   }
 
   if (!tracks || !tracks.length) {
-    console.warn("[MyWordLookup] 這部影片找不到字幕軌資料，a/s/d 快捷鍵暫時無法使用（可能這部影片沒有字幕）");
-    subtitleCues = [];
+    // 注意：這裡故意不清空 subtitleCues——即時記錄（recordLiveCaptionCue）
+    // 可能已經累積了一些資料，預先抓取失敗不代表 a/s/d 完全不能用。
+    console.warn(
+      "[MyWordLookup] 這部影片抓不到完整字幕軌資料，改用「即時記錄目前看過的句子」當備援，a/s/d 只能跳到已經看過的句子"
+    );
     return;
   }
 
   try {
     // 優先找英文字幕，沒有的話用第一個可用的字幕軌
     const track = tracks.find((t) => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
-    if (!track || !track.baseUrl) {
-      subtitleCues = [];
-      return;
-    }
+    if (!track || !track.baseUrl) return;
+
     const capUrl = track.baseUrl + "&fmt=json3";
     const raw = await fetch(capUrl).then((r) => r.text());
-    if (!raw) {
-      // 常見於被廣告攔截套件擋掉請求時回傳空字串，不算真正的錯誤，安靜跳過即可
-      subtitleCues = [];
-      return;
-    }
+    if (!raw) return; // 常見於被廣告攔截套件擋掉請求時回傳空字串，安靜跳過、留給即時記錄當備援即可
+
     const data = JSON.parse(raw);
-    subtitleCues = (data.events || [])
+    const fetchedCues = (data.events || [])
       .filter((ev) => ev.segs && ev.segs.length)
       .map((ev) => ({
         start: ev.tStartMs / 1000,
-        end: (ev.tStartMs + (ev.dDurationMs || 0)) / 1000,
         text: ev.segs.map((s) => s.utf8 || "").join("").trim(),
       }))
       .filter((c) => c.text);
+
+    if (!fetchedCues.length) return;
+
+    subtitleCues = fetchedCues; // 預先抓取成功，用完整資料整批取代掉即時記錄的部分資料
     cuesLoadedForVideoId = videoId;
     console.log(`[MyWordLookup] 已載入 ${subtitleCues.length} 句字幕斷點，a/s/d 快捷鍵可以用了`);
   } catch (e) {
-    console.warn("[MyWordLookup] 句子斷點資料載入失敗，快捷鍵功能可能暫時無法使用：", e);
-    subtitleCues = [];
+    console.warn("[MyWordLookup] 句子斷點資料載入失敗，改用即時記錄當備援：", e);
   }
 }
 
@@ -446,14 +489,13 @@ function findCurrentCueIndex() {
   const video = getVideoEl();
   if (!video || !subtitleCues.length) return -1;
   const t = video.currentTime;
-  let idx = subtitleCues.findIndex((c) => t >= c.start && t < c.end);
-  if (idx === -1) {
-    // 落在兩句字幕的空檔，找最近一句已經開始播放的
-    for (let i = subtitleCues.length - 1; i >= 0; i--) {
-      if (subtitleCues[i].start <= t) {
-        idx = i;
-        break;
-      }
+  // 找「開始時間 <= 目前播放時間」裡最晚的一句，就是目前正在播的這句
+  // （加一點點誤差，避免卡在浮點數邊界剛好判斷不到）。
+  let idx = -1;
+  for (let i = subtitleCues.length - 1; i >= 0; i--) {
+    if (subtitleCues[i].start <= t + 0.15) {
+      idx = i;
+      break;
     }
   }
   return idx;

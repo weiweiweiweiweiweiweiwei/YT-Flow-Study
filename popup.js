@@ -1,5 +1,4 @@
 const DEFAULT_SIZE = 100;
-const DEFAULT_GOAL_MINUTES = 30;
 
 function render(activeSize) {
   document.querySelectorAll(".size-btn").forEach((btn) => {
@@ -18,18 +17,6 @@ document.querySelectorAll(".size-btn").forEach((btn) => {
       render(size);
     });
   });
-});
-
-const goalInput = document.getElementById("goalInput");
-
-chrome.storage.local.get("dailyGoalMinutes", ({ dailyGoalMinutes }) => {
-  goalInput.value = dailyGoalMinutes || DEFAULT_GOAL_MINUTES;
-});
-
-goalInput.addEventListener("change", () => {
-  const value = Math.max(1, Number(goalInput.value) || DEFAULT_GOAL_MINUTES);
-  goalInput.value = value;
-  chrome.storage.local.set({ dailyGoalMinutes: value });
 });
 
 document.getElementById("openReviewBtn").addEventListener("click", () => {

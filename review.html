@@ -4,10 +4,20 @@
   <meta charset="UTF-8" />
   <title>FlowStudy 學習面板</title>
   <link rel="stylesheet" href="review.css" />
+  <script>
+    // 在畫面畫出來之前先套用主題，避免「先白一下再變深色」的閃爍。
+    // localStorage 是同步的，chrome.storage.local 是非同步的，所以先用
+    // localStorage 做第一時間的判斷，後面 review.js 再用 chrome.storage.local
+    // 校正（例如你在另一個分頁改了設定）。
+    (function () {
+      try {
+        var theme = localStorage.getItem("themePreference") || "light";
+        document.documentElement.setAttribute("data-theme", theme);
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
-  <div class="bg-decor" aria-hidden="true"></div>
-
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-logo">FlowStudy</div>
@@ -19,6 +29,11 @@
           <span class="sidebar-link-icon">📖</span>收藏單字
         </a>
       </nav>
+      <div class="sidebar-bottom">
+        <a class="sidebar-link" data-view="settings" href="review.html?view=settings">
+          <span class="sidebar-link-icon">⚙️</span>設定
+        </a>
+      </div>
     </aside>
 
     <main class="main">
@@ -31,11 +46,8 @@
 
       <section id="homeView">
         <div class="cards-row">
-          <div class="glass-card goal-card">
-            <div class="card-label-row">
-              <span class="card-label">今日沉浸分鐘數</span>
-              <button class="goal-edit-btn" id="goalEditBtn" title="設定每日目標" aria-label="設定每日目標">✎</button>
-            </div>
+          <div class="card goal-card">
+            <div class="card-label">今日沉浸分鐘數</div>
             <div class="goal-big-value" id="todayMinutesValue">0</div>
             <div class="progress-track">
               <div class="progress-fill" id="goalProgressFill" style="width: 0%"></div>
@@ -44,20 +56,15 @@
               <span id="goalMinutesLabel">0 / 30 mins</span>
               <span id="goalRemainingText"></span>
             </div>
-            <div class="goal-edit-row" id="goalEditRow" hidden>
-              <input type="number" id="goalEditInput" min="1" step="1" />
-              <span>分鐘</span>
-              <button class="goal-save-btn" id="goalSaveBtn">儲存</button>
-            </div>
           </div>
 
-          <div class="glass-card total-card">
+          <div class="card total-card">
             <div class="card-label">總沉浸時數</div>
             <div class="total-big-value" id="totalTimeValue">0 m</div>
           </div>
         </div>
 
-        <section class="glass-card chart-section">
+        <section class="card chart-section">
           <h2>最近 7 天沉浸時數</h2>
           <div class="chart-legend"><span class="legend-dot"></span>沉浸時間</div>
           <div class="bar-chart" id="barChart"></div>
@@ -66,6 +73,40 @@
 
       <section id="wordsView">
         <div class="word-list" id="wordList"></div>
+      </section>
+
+      <section id="settingsView">
+        <div class="card settings-card">
+          <h2>每日沉浸目標</h2>
+          <p class="settings-hint">設定每天想沉浸多久，首頁的進度條會依這個目標計算。</p>
+          <div class="goal-slider-row">
+            <input type="range" id="goalSlider" min="0" max="4" step="1" list="goalTicks" />
+            <datalist id="goalTicks">
+              <option value="0"></option>
+              <option value="1"></option>
+              <option value="2"></option>
+              <option value="3"></option>
+              <option value="4"></option>
+            </datalist>
+          </div>
+          <div class="goal-slider-labels">
+            <span>15 分鐘</span>
+            <span>30 分鐘</span>
+            <span>1 小時</span>
+            <span>2 小時</span>
+            <span>3 小時</span>
+          </div>
+          <div class="goal-slider-current">目前目標：<strong id="goalSliderValue">30 分鐘</strong></div>
+        </div>
+
+        <div class="card settings-card">
+          <h2>外觀</h2>
+          <p class="settings-hint">選擇淺色或深色介面。</p>
+          <div class="theme-toggle-row">
+            <button class="theme-btn" id="themeLightBtn" data-theme-value="light">☀️ 淺色</button>
+            <button class="theme-btn" id="themeDarkBtn" data-theme-value="dark">🌙 深色</button>
+          </div>
+        </div>
       </section>
     </main>
   </div>
