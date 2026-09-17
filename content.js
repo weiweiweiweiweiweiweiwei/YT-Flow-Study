@@ -363,7 +363,20 @@ function getCurrentCaptionSentence() {
 
 let pendingCueText = null;
 let pendingCueStart = 0;
-let pendingCueTimer = null;
+
+// YouTube 自動語音辨識字幕（caps=asr）是「同一行不斷往後長出新字」的方式顯示，
+// 不是整句一次出現——例如畫面會先顯示 "I think"，接著變成 "I think that"，
+// 再變成 "I think that we"...一直長到這句話講完，字幕窗口清空，換下一句從頭開始長。
+// 判斷「這是不是同一句話還在長」的方法：新內容是不是舊內容加了字之後的結果
+// （用 startsWith 判斷），是的話就只更新內容、先不提交；不是的話（代表整個
+// 換了一句新的，或字幕窗口清空了）才把累積好的內容當作一筆完整的斷點提交。
+function commitPendingCue() {
+  if (!pendingCueText) return;
+  lastRecordedCueText = pendingCueText;
+  subtitleCues.push({ start: pendingCueStart, text: pendingCueText });
+  if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
+  pendingCueText = null;
+}
 
 function recordLiveCaptionCue() {
   const videoId = getVideoId();
@@ -375,7 +388,6 @@ function recordLiveCaptionCue() {
     lastRecordedCueVideoId = videoId;
     lastRecordedCueText = null;
     pendingCueText = null;
-    if (pendingCueTimer) clearTimeout(pendingCueTimer);
     if (cuesLoadedForVideoId !== videoId) subtitleCues = [];
   }
 
@@ -385,21 +397,25 @@ function recordLiveCaptionCue() {
   if (!video) return;
 
   const sentence = getCurrentCaptionSentence();
-  if (!sentence || sentence === lastRecordedCueText || sentence === pendingCueText) return;
 
-  // 字幕常常是一個字一個字慢慢浮現的，不能文字一有變化就立刻當成新的一句，
-  // 不然一整句話會被切成好幾個「半句話」的斷點（這正是先前 a/s/d 跳成
-  // 「跳到上一個字」而不是「跳到上一句」的原因）。等文字停止變化一小段時間
-  // （代表這句字幕已經顯示完整、不會再變了）才真正記錄下來。
+  if (!sentence) {
+    // 字幕窗口清空了：代表上一句真的講完了，把累積的內容提交成一筆完整斷點
+    commitPendingCue();
+    return;
+  }
+  if (sentence === pendingCueText) return; // 內容沒變，不用做事
+
+  if (pendingCueText && sentence.startsWith(pendingCueText)) {
+    // 只是原本那句話又長出了幾個字，還是同一句，更新內容但先不提交
+    pendingCueText = sentence;
+    return;
+  }
+
+  // 內容整個變了（不是接續），代表換成新的一句：先把累積的舊句子提交，
+  // 再從這裡開始重新累積新的一句。
+  commitPendingCue();
   pendingCueText = sentence;
   pendingCueStart = video.currentTime;
-  if (pendingCueTimer) clearTimeout(pendingCueTimer);
-  pendingCueTimer = setTimeout(() => {
-    if (pendingCueText !== sentence) return; // 這段等待期間字幕又變了，這次記錄已經過期，不要採用
-    lastRecordedCueText = sentence;
-    subtitleCues.push({ start: pendingCueStart, text: sentence });
-    if (subtitleCues.length > 500) subtitleCues.shift(); // 避免長時間播放無限增長
-  }, 350);
 }
 
 // 從整段 HTML 文字裡，找出 "captionTracks": [ ... ] 這個區塊，用括號配對的方式抓出完整陣列
