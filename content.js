@@ -519,11 +519,20 @@ async function loadCaptionCues() {
   try {
     // 優先找英文字幕，沒有的話用第一個可用的字幕軌
     const track = tracks.find((t) => t.languageCode && t.languageCode.startsWith("en")) || tracks[0];
-    if (!track || !track.baseUrl) return;
+    console.log("[FlowStudy] 選中的字幕軌：", track);
+    if (!track || !track.baseUrl) {
+      console.warn("[FlowStudy] 選中的字幕軌沒有 baseUrl，放棄");
+      return;
+    }
 
     const capUrl = track.baseUrl + "&fmt=json3";
+    console.log("[FlowStudy] 準備抓取字幕內容，URL：", capUrl);
     const raw = await fetch(capUrl).then((r) => r.text());
-    if (!raw) return; // 常見於被廣告攔截套件擋掉請求時回傳空字串，安靜跳過、留給即時記錄當備援即可
+    console.log("[FlowStudy] 字幕內容回應長度：", raw ? raw.length : 0, "，前 200 字：", (raw || "").slice(0, 200));
+    if (!raw) {
+      console.warn("[FlowStudy] 字幕內容回應是空的（常見於被廣告攔截套件擋掉），改用即時記錄當備援");
+      return;
+    }
 
     const data = JSON.parse(raw);
     const fetchedCues = (data.events || [])
@@ -533,8 +542,12 @@ async function loadCaptionCues() {
         text: ev.segs.map((s) => s.utf8 || "").join("").trim(),
       }))
       .filter((c) => c.text);
+    console.log("[FlowStudy] 解析出的字幕句數：", fetchedCues.length);
 
-    if (!fetchedCues.length) return;
+    if (!fetchedCues.length) {
+      console.warn("[FlowStudy] 字幕內容解析出來是 0 句，放棄");
+      return;
+    }
 
     subtitleCues = fetchedCues; // 預先抓取成功，用完整資料整批取代掉即時記錄的部分資料
     cuesLoadedForVideoId = videoId;
