@@ -1,82 +1,128 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
   <style>
+    /* 工具列小面板。
+       只做兩件事：讓使用者一眼看到今天沉浸了多久，以及一鍵進首頁。
+
+       翻譯框大小的設定已經從這裡拿掉了——它現在跟字幕大小綁在一起，
+       統一在播放器控制列的齒輪裡調整。同一個比例分散在兩個地方調，
+       只會調出比例對不起來的結果。 */
+    :root {
+      --fs-ink: #020617;
+      --fs-sub: #64748b;
+      --fs-line: #e2e8f0;
+      --fs-accent: #2563eb;
+    }
+    * { box-sizing: border-box; }
     body {
-      width: 220px;
+      width: 248px;
+      margin: 0;
+      padding: 18px 16px 16px;
       font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
-      padding: 14px;
+      color: var(--fs-ink);
+      background: #fff;
     }
-    h3 {
-      margin: 0 0 10px;
-      font-size: 14px;
-    }
-    .size-row {
+
+    .brand {
       display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .brand img {
+      width: 24px;
+      height: 24px;
+      padding: 4px;
+      border-radius: 7px;
+      background: #111827;
+    }
+
+    /* 今日沉浸：數字是主角，單位與說明退到旁邊 */
+    .today {
+      display: flex;
+      align-items: baseline;
       gap: 6px;
     }
-    .size-btn {
-      flex: 1;
-      padding: 8px 0;
-      border: 1px solid #ddd;
-      border-radius: 8px;
-      background: #fafafa;
-      cursor: pointer;
-      font-size: 13px;
+    .today-num {
+      font-size: 44px;
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.03em;
     }
-    .size-btn:hover {
-      background: #f0f0f0;
+    .today-unit {
+      font-size: 14px;
+      color: var(--fs-sub);
     }
-    .size-btn.active {
-      background: #1a1a1a;
-      color: #fff;
-      border-color: #1a1a1a;
-    }
-    p {
-      color: #888;
+    .today-label {
+      margin: 6px 0 0;
       font-size: 12px;
-      margin-top: 10px;
-      line-height: 1.5;
+      color: var(--fs-sub);
     }
+    .today.is-loading .today-num { color: var(--fs-line); }
+
     hr {
       border: none;
-      border-top: 1px solid #eee;
-      margin: 16px 0;
+      border-top: 1px solid var(--fs-line);
+      margin: 16px 0 14px;
     }
-    .review-link-btn {
-      display: block;
+
+    .home-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
       width: 100%;
-      padding: 10px 0;
+      padding: 11px 0;
       border: none;
-      border-radius: 8px;
-      background: #3b82f6;
+      border-radius: 9px;
+      background: var(--fs-accent);
       color: #fff;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 600;
+      font-family: inherit;
       cursor: pointer;
-      margin-bottom: 4px;
     }
-    .review-link-btn:hover {
-      background: #2f6fe0;
+    .home-btn:hover { background: #1d4ed8; }
+    .home-btn svg { width: 17px; height: 17px; }
+
+    .hint {
+      margin: 12px 0 0;
+      font-size: 11.5px;
+      line-height: 1.6;
+      color: var(--fs-sub);
     }
   </style>
 </head>
 <body>
-  <button class="review-link-btn" id="openReviewBtn">📖 我的學習中心</button>
+  <div class="brand">
+    <img src="icon.svg" alt="" />
+    FlowStudy
+  </div>
+
+  <div class="today is-loading" id="today">
+    <span class="today-num" id="todayNum">—</span>
+    <span class="today-unit">分鐘</span>
+  </div>
+  <p class="today-label">今日沉浸分鐘數</p>
 
   <hr />
 
-  <h3>翻譯框框大小</h3>
-  <div class="size-row" id="sizeRow">
-    <button class="size-btn" data-size="75">75%</button>
-    <button class="size-btn" data-size="100">100%</button>
-    <button class="size-btn" data-size="150">150%</button>
-    <button class="size-btn" data-size="200">200%</button>
-  </div>
-  <p>點字幕單字或選取片語時跳出的翻譯小框框，會套用這個大小（立即生效，不用重新整理）。</p>
+  <button class="home-btn" id="openHomeBtn" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/>
+      <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+    </svg>
+    首頁
+  </button>
 
-  <p style="margin-top: 16px;">每日沉浸目標、深淺色模式等設定，請到「我的學習中心」裡的「設定」頁面調整。</p>
+  <p class="hint">字幕與翻譯框大小，請在播放器控制列的齒輪裡調整。</p>
+
   <script src="popup.js"></script>
 </body>
 </html>

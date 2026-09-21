@@ -1,26 +1,32 @@
-const DEFAULT_SIZE = 100;
+// ============================================================================
+// 工具列小面板
+// ============================================================================
+// 只有兩件事：顯示今天沉浸了幾分鐘，以及開啟首頁。
+//
+// 沉浸時數存在擴充功能自己的 IndexedDB 裡，這個面板雖然也跑在
+// chrome-extension:// 底下、理論上碰得到，但仍然走背景的訊息介面——
+// 讀取邏輯（哪些 session 算今天、時區怎麼算）只有一份，不會兩邊各寫一套。
+// ============================================================================
 
-function render(activeSize) {
-  document.querySelectorAll(".size-btn").forEach((btn) => {
-    btn.classList.toggle("active", Number(btn.dataset.size) === activeSize);
-  });
+function showMinutes(seconds) {
+  const el = document.getElementById("todayNum");
+  el.textContent = String(Math.floor((seconds || 0) / 60));
+  document.getElementById("today").classList.remove("is-loading");
 }
 
-chrome.storage.local.get("boxScale", ({ boxScale }) => {
-  render(boxScale || DEFAULT_SIZE);
-});
-
-document.querySelectorAll(".size-btn").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const size = Number(btn.dataset.size);
-    chrome.storage.local.set({ boxScale: size }, () => {
-      render(size);
-    });
+try {
+  chrome.runtime.sendMessage({ type: "immersion:today" }, (res) => {
+    if (chrome.runtime.lastError || !res || !res.ok) {
+      // 背景還沒醒或讀取失敗時顯示 0，而不是一直卡在「—」讓人以為當掉了
+      showMinutes(0);
+      return;
+    }
+    showMinutes(res.data);
   });
-});
+} catch (e) {
+  showMinutes(0);
+}
 
-document.getElementById("openReviewBtn").addEventListener("click", () => {
-  // 直接開「學習中單字」清單，而不是目標儀表板首頁——這顆按鈕原本的目的
-  // 就是讓使用者能隨時看到已經標記收藏的單字，開儀表板會讓人以為雙擊收藏沒有生效。
-  chrome.tabs.create({ url: chrome.runtime.getURL("review.html?view=words") });
+document.getElementById("openHomeBtn").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("review.html") });
 });
