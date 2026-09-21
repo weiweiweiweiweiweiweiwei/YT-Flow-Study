@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>FlowStudy 資料層測試</title>
+<style>
+ body{font-family:"Segoe UI","Microsoft JhengHei",sans-serif;margin:24px;background:#fff;color:#111}
+ pre{background:#f6f7f9;padding:16px;border-radius:8px;white-space:pre-wrap;line-height:1.55;font-size:13px}
+ .hint{color:#666;font-size:13px}
+</style>
+</head>
+<body>
+<h1>FlowStudy 資料層測試</h1>
+<p class="hint">
+  測試 core/ 底下的資料模型、倉儲、SRS 排程器與分析公式。
+  用的是真實的 IndexedDB（每次執行前會先清空），chrome.storage 則以記憶體版本替代。
+  <b>需要用本機伺服器開啟</b>（ES module 不能從 file:// 載入）。
+</p>
+<pre id="out">執行中…</pre>
+
+<script type="module">
+const lines = [];
+let pass = 0, fail = 0;
+
+function check(name, cond, detail) {
+  if (cond) { pass++; lines.push("  ✓ " + name); }
+  else { fail++; lines.push("  ✗ " + name + (detail !== undefined ? "\n      → " + detail : "")); }
+}
+function section(t) { lines.push("\n" + t); }
+function render() {
+  lines.push("\n" + "=".repeat(52));
+  lines.push(`通過 ${pass} 項，失敗 ${fail} 項`);
+  lines.push("=".repeat(52));
+  document.getElementById("out").textContent = lines.join("\n");
+  document.title = fail === 0 ? "ALL PASS" : ("FAIL " + fail);
+}
+
+// ===== chrome.storage 的記憶體替身（測試環境沒有真的 chrome API）=====
+const memStore = {};
+globalThis.chrome = {
+  storage: {
+    local: {
+      get(keys, cb) {
+        let out = {};
+        if (keys === null || keys === undefined) out = { ...memStore };
+        else if (typeof keys === "string") out = memStore[keys] !== undefined ? { [keys]: memStore[keys] } : {};
+        else if (Array.isArray(keys)) keys.forEach(k => { if (memStore[k] !== undefined) out[k] = memStore[k]; });
+        cb ? cb(out) : null;
+        return Promise.resolve(out);
+      },
+      set(obj, cb) { Object.assign(memStore, obj); if (cb) cb(); return Promise.resolve(); },
+      remove(keys, cb) {
+        (Array.isArray(keys) ? keys : [keys]).forEach(k => delete memStore[k]);
+        if (cb) cb(); return Promise.resolve();
+      },
+    },
+    onChanged: { addListener() {}, removeListener() {} },
+  },
+  runtime: { lastError: null },
+};
+
+async function run() {
+  // 每次執行都從全新的資料庫開始，測試結果才可重現
+  await new Promise((resolve) => {
+    const req = indexedDB.deleteDatabase("flowstudy");
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  });
+
+  // 動態載入，確保上面的 chrome 替身與資料庫清空都已經完成
+  const models = await import("./core/models.js");
+  const db = await import("./core/storage/db.js");
+  const vocabStore = await import("./core/storage/vocabularyStore.js");
+  const occStore = await import("./core/storage/occurrenceStore.js");
+  const reviewStore = await import("./core/storage/reviewStore.js");
+  const immersionStore = await import("./core/storage/immersionStore.js");
+  const settingsStore = await import("./core/storage/settingsStore.js");
+  const srs = await import("./core/srs/scheduler.js");
+  const dueQueue = await import("./core/srs/dueQueue.js");
+  const analytics = await import("./core/analytics/analytics.js");
+
+  // ========== 1. 單字正規化 ==========
+  section("1. 單字正規化（收藏比對與字幕底線共用同一套規則）");
+  {
+    const n = models.normalizeTerm;
+    check('"Run" / "run" / " RUN " 正規化後相同',
+      n("Run") === "run" && n("run") === "run" && n(" RUN ") === "run", `${n("Run")} / ${n(" RUN ")}`);
+    check('句尾標點被去掉："run."  → "run"', n("run.") === "run", n("run."));
+    check("字中的撇號保留：don't", n("don't") === "don't", n("don't"));
+    check("連字號保留：well-known", n("well-known") === "well-known", n("well-known"));
+    check("彎引號統一：don’t → don't", n("don’t") === "don't", n("don’t"));
+    check("空值不會當機", n(null) === "" && n(undefined) === "");
+    check("content.js 用的是同一份實作",
+      globalThis.FlowStudyNormalize && globalThis.FlowStudyNormalize.normalizeTerm === models.normalizeTerm);
+  }
+
+  // ========== 2. SRS 排程器 ==========
+  section("2. SRS 排程器（唯一擁有排程公式的地方）");
+  {
+    const T0 = new Date("2026-01-01T00:00:00Z");
+    let word = models.createVocabularyWord({ term: "run" });
+
+    check("新單字的狀態是 new", word.state === "new");
+    check("新單字一建立就到期（會出現在複習佇列裡）", word.dueAt === word.createdAt);
+
+    // 第一次 Good → 進入學習階段第一步
+    let r = srs.schedule(word, "good", T0);
+    check("第一次 Good 之後不是『已熟悉』（不能按一次就變熟）", r.patch.state !== "mature", r.patch.state);
+    check("第一次 Good 之後是『學習中』", r.patch.state === "learning", r.patch.state);
+    check("下次複習是分鐘級（還在學習階段）",
+      new Date(r.patch.dueAt) - T0 === 10 * 60 * 1000, (new Date(r.patch.dueAt) - T0) / 60000 + " 分鐘");
+    word = { ...word, ...r.patch };
+
+    // 第二次 Good → 畢業
+    r = srs.schedule(word, "good", T0);
+    check("走完學習步驟後畢業成 1 天間隔", r.patch.intervalDays === 1, r.patch.intervalDays);
+    word = { ...word, ...r.patch };
+
+    // 連續 Good，直到變成 mature
+    let steps = 0;
+    while (word.state !== "mature" && steps < 20) {
+      r = srs.schedule(word, "good", T0);
+      word = { ...word, ...r.patch };
+      steps++;
+    }
+    check("持續答對最後會變成『已熟悉』", word.state === "mature", word.state);
+    check("『已熟悉』的判定規則是間隔 ≥ 21 天",
+      word.intervalDays >= srs.SRS_CONFIG.MATURE_INTERVAL_DAYS, word.intervalDays + " 天");
+    check("變成熟悉需要多次複習，不是一次",
+      word.reviewCount >= 4, word.reviewCount + " 次複習");
+
+    // 答錯
+    const matureWord = { ...word };
+    r = srs.schedule(matureWord, "again", T0);
+    check("已熟悉的單字答錯會記一次 lapse", r.patch.lapseCount === matureWord.lapseCount + 1);
+    check("答錯後打回學習階段", r.patch.state === "learning", r.patch.state);
+    check("答錯後難易係數下降", r.patch.ease < matureWord.ease, `${matureWord.ease} → ${r.patch.ease}`);
+    check("答錯後下次複習是分鐘級（馬上再問一次）",
+      new Date(r.patch.dueAt) - T0 <= 60 * 1000);
+    check("答錯保留了一半的間隔當重新畢業目標（不會全部歸零）",
+      r.patch.relearnTargetDays > 1, r.patch.relearnTargetDays + " 天");
+
+    // 重新學會之後應該回到保留的間隔，而不是從 1 天開始
+    let relearn = { ...matureWord, ...r.patch };
+    const target = r.patch.relearnTargetDays;
+    for (let i = 0; i < srs.SRS_CONFIG.LEARNING_STEPS_MINUTES.length; i++) {
+      relearn = { ...relearn, ...srs.schedule(relearn, "good", T0).patch };
+    }
+    check("重新學會後回到保留的間隔，不是從頭開始",
+      relearn.intervalDays === target, `${relearn.intervalDays} 天（預期 ${target}）`);
+
+    // 學習階段答錯不算 lapse
+    const learningWord = models.createVocabularyWord({ term: "test" });
+    const afterGood = { ...learningWord, ...srs.schedule(learningWord, "good", T0).patch };
+    const afterAgain = srs.schedule(afterGood, "again", T0);
+    check("還在學習階段時答錯不計 lapse（那是還沒學會，不是忘記）",
+      afterAgain.patch.lapseCount === 0, afterAgain.patch.lapseCount);
+
+    // 預覽與實際一致
+    const preview = srs.previewSchedule(word, "good", T0);
+    const actual = srs.schedule(word, "good", T0);
+    check("預覽的下次時間與實際排程完全一致",
+      preview.dueAt === actual.patch.dueAt && preview.intervalDays === actual.patch.intervalDays);
+
+    // 排程事件包含分析頁需要的前後狀態
+    check("排程結果帶有前後狀態（給 ReviewEvent 用）",
+      actual.event.previousState && actual.event.newState &&
+      actual.event.previousDueAt !== undefined && actual.event.newDueAt);
+    check("間隔有上限，不會排到幾十年後",
+      actual.patch.intervalDays <= srs.SRS_CONFIG.MAX_INTERVAL_DAYS);
+  }
+
+  // ========== 3. 分析公式 ==========
+  section("3. 分析公式（所有頁面共用同一份）");
+  {
+    check("沒有複習紀錄時保留率是 null（不是 0）",
+      analytics.calculateRetentionRate([]).rate === null);
+    const events = [
+      { rating: "good" }, { rating: "good" }, { rating: "again" }, { rating: "good" },
+    ];
+    const ret = analytics.calculateRetentionRate(events);
+    check("保留率 = 答對次數 / 完成次數", Math.abs(ret.rate - 0.75) < 1e-9, ret.rate);
+    check("保留率有回報明細", ret.successful === 3 && ret.total === 4);
+
+    const { startIso, endIso } = analytics.resolveRange("week", new Date("2026-01-07T12:00:00"));
+    const daily = analytics.aggregateDailyStats({
+      sessions: [
+        { startedAt: "2026-01-05T10:00:00", watchedSeconds: 1800 },
+        { startedAt: "2026-01-05T14:00:00", watchedSeconds: 1800 },
+        { startedAt: "2026-01-07T10:00:00", watchedSeconds: 3600 },
+      ],
+      reviewEvents: [{ reviewedAt: "2026-01-07T11:00:00", rating: "good" }],
+      words: [{ createdAt: "2026-01-05T10:30:00" }, { createdAt: "2026-01-07T10:30:00" }],
+      startIso, endIso,
+    });
+    check("每日彙總有完整 7 天（沒資料的日子補 0）", daily.length === 7, daily.length);
+    check("同一天的多個 session 會合併", daily.find(d => d.date === "2026-01-05").immersionSeconds === 3600);
+    check("同一天的 session 數量正確", daily.find(d => d.date === "2026-01-05").sessionCount === 2);
+
+    const eff = analytics.calculateLearningEfficiency(daily);
+    check("學習效率 = 新單字數 / 沉浸小時數", Math.abs(eff.wordsPerHour - 1) < 1e-9, eff.wordsPerHour);
+    check("沒有沉浸時數時效率是 null 而不是 Infinity",
+      analytics.calculateLearningEfficiency([{ newWordCount: 5, immersionSeconds: 0, sessionCount: 0, reviewCount: 0, reviewSuccessCount: 0 }]).wordsPerHour === null);
+
+    const avg = analytics.calculateDailyAverage(daily);
+    check("每日平均以『有學習的天數』為分母", avg.activeDays === 2 && Math.abs(avg.averageMinutesPerActiveDay - 60) < 1e-9,
+      `${avg.activeDays} 天 / ${avg.averageMinutesPerActiveDay} 分鐘`);
+
+    const growth = analytics.calculateVocabularyGrowth(daily, 10);
+    check("單字成長是累積曲線，且從既有總量接續",
+      growth[0].total === 10 && growth[growth.length - 1].total === 12,
+      `${growth[0].total} → ${growth[growth.length-1].total}`);
+
+    const habits = analytics.calculateImmersionHabits(daily, 30);
+    check("熱力圖每天都有強度等級 0~4", habits.days.every(d => d.level >= 0 && d.level <= 4));
+    check("沒學習的日子強度是 0", habits.days.find(d => d.date === "2026-01-06").level === 0);
+    check("有計算連續學習天數", typeof habits.currentStreak === "number");
+  }
+
+  // ========== 4. 收藏單字（IndexedDB）==========
+  section("4. 從字幕收藏單字");
+  let runWordId = null;
+  {
+    const r1 = await vocabStore.saveWordFromSubtitle({
+      term: "run", translation: "跑",
+      videoId: "VIDEO_A", videoTitle: "影片 A",
+      sentence: "I need to run.", startTime: 151.2, endTime: 153.8,
+    });
+    check("建立了 VocabularyWord", !!r1.word && r1.isNewWord === true);
+    check("建立了 VocabularyOccurrence", !!r1.occurrence);
+    check("出現紀錄保存了完整句子", r1.occurrence.sentence === "I need to run.");
+    check("出現紀錄保存了精確時間戳（可跳回影片）",
+      r1.occurrence.startTime === 151.2 && r1.occurrence.endTime === 153.8);
+    runWordId = r1.word.id;
+
+    // 同一個字在另一部影片再次收藏
+    const r2 = await vocabStore.saveWordFromSubtitle({
+      term: "Run", // 大小寫不同
+      videoId: "VIDEO_B", videoTitle: "影片 B",
+      sentence: "The machine runs automatically.", startTime: 512.0, endTime: 515.0,
+    });
+    check("大小寫不同仍視為同一個單字（不會重複建立）", r2.word.id === runWordId && r2.isNewWord === false);
+    check("但會新增一筆出現紀錄", r2.occurrence.id !== r1.occurrence.id);
+
+    const occs = await occStore.getOccurrencesForWord(runWordId);
+    check("同一個單字有 2 筆出現紀錄", occs.length === 2, occs.length);
+    check("兩筆來自不同影片",
+      new Set(occs.map(o => o.videoId)).size === 2, JSON.stringify(occs.map(o => o.videoId)));
+
+    // 連續快速點擊同一句
+    const before = (await occStore.getOccurrencesForWord(runWordId)).length;
+    await Promise.all([
+      vocabStore.saveWordFromSubtitle({ term: "run", videoId: "VIDEO_A", sentence: "I need to run.", startTime: 151.2 }),
+      vocabStore.saveWordFromSubtitle({ term: "run", videoId: "VIDEO_A", sentence: "I need to run.", startTime: 151.2 }),
+    ]);
+    const after = (await occStore.getOccurrencesForWord(runWordId)).length;
+    check("連續快速重複收藏同一句不會產生重複紀錄", after === before, `${before} → ${after}`);
+
+    const all = await vocabStore.getAllWords();
+    check("單字庫裡 run 只有一筆", all.filter(w => w.normalizedTerm === "run").length === 1);
+  }
+
+  // ========== 5. 複習流程 ==========
+  section("5. 複習流程（排程 + 事件 + 單字更新為同一個交易）");
+  {
+    const before = await vocabStore.getWord(runWordId);
+    const result = await reviewStore.submitReview(runWordId, "good");
+    check("複習成功", !!result && !!result.word && !!result.reviewEvent);
+    check("建立了 ReviewEvent", result.reviewEvent.vocabularyWordId === runWordId);
+    check("事件記錄了評分", result.reviewEvent.rating === "good");
+    check("事件記錄了前後狀態",
+      result.reviewEvent.previousState === "new" && result.reviewEvent.newState === "learning",
+      `${result.reviewEvent.previousState} → ${result.reviewEvent.newState}`);
+    check("dueAt 有改變", result.word.dueAt !== before.dueAt);
+    check("reviewCount 增加", result.word.reviewCount === before.reviewCount + 1);
+    check("單字狀態改變", result.word.state !== before.state, `${before.state} → ${result.word.state}`);
+
+    const events = await reviewStore.getReviewEventsForWord(runWordId);
+    check("複習歷史查得到", events.length === 1);
+
+    const missing = await reviewStore.submitReview("不存在的ID", "good");
+    check("對已刪除的單字複習會回傳 null 而不是丟例外", missing === null);
+  }
+
+  // ========== 6. 到期佇列 ==========
+  section("6. 到期佇列");
+  {
+    for (let i = 0; i < 5; i++) {
+      await vocabStore.saveWordFromSubtitle({
+        term: "word" + i, videoId: "VIDEO_C", sentence: "Sentence " + i + ".", startTime: i * 10,
+      });
+    }
+    const queue1 = await dueQueue.getDueQueue({ limit: 100 });
+    const queue2 = await dueQueue.getDueQueue({ limit: 100 });
+    check("佇列不是空的", queue1.length > 0, queue1.length);
+    check("佇列順序可重現（重新整理不會亂掉）",
+      JSON.stringify(queue1.map(w => w.id)) === JSON.stringify(queue2.map(w => w.id)));
+    check("依到期時間由舊到新排序",
+      queue1.every((w, i) => i === 0 || String(queue1[i-1].dueAt) <= String(w.dueAt)));
+
+    const summary = dueQueue.summarizeQueue(queue1);
+    check("佇列摘要數字加總正確",
+      summary.new + summary.learning + summary.mature === summary.total, JSON.stringify(summary));
+
+    // 複習中單字被刪掉
+    const fakeQueue = [{ id: "已經不存在" }, ...queue1];
+    const next = await dueQueue.takeNextCard(fakeQueue);
+    check("佇列裡已被刪除的單字會被跳過", next.word && next.word.id !== "已經不存在");
+
+    const emptyNext = await dueQueue.takeNextCard([{ id: "不存在A" }, { id: "不存在B" }]);
+    check("全部都不存在時回傳 null，不會當機", emptyNext.word === null);
+
+    const n = await dueQueue.countDue();
+    check("到期數量統計正確", n === queue1.length, `${n} vs ${queue1.length}`);
+  }
+
+  // ========== 7. 刪除單字時一併清乾淨 ==========
+  section("7. 刪除單字");
+  {
+    const target = await vocabStore.findWordByTerm("word0");
+    check("可以用文字找到單字", !!target);
+    const res = await vocabStore.deleteWord(target.id);
+    check("刪除時一併移除出現紀錄", res.deletedOccurrences > 0, res.deletedOccurrences);
+    check("單字真的不見了", (await vocabStore.getWord(target.id)) === undefined);
+    check("出現紀錄沒有留下孤兒", (await occStore.getOccurrencesForWord(target.id)).length === 0);
+  }
+
+  // ========== 8. 沉浸 session ==========
+  section("8. 沉浸時間追蹤");
+  {
+    const s = await immersionStore.startSession({ videoId: "VIDEO_A", videoTitle: "影片 A" });
+    check("建立 session", !!s.id && s.watchedSeconds === 0);
+
+    await immersionStore.addWatchedSeconds(s.id, 120);
+    let cur = await immersionStore.getSession(s.id);
+    check("累加 120 秒", cur.watchedSeconds === 120, cur.watchedSeconds);
+
+    // 暫停期間不呼叫 addWatchedSeconds，秒數不該變
+    cur = await immersionStore.getSession(s.id);
+    check("暫停期間秒數不變（呼叫端停止累加）", cur.watchedSeconds === 120);
+
+    await immersionStore.addWatchedSeconds(s.id, 60);
+    cur = await immersionStore.getSession(s.id);
+    check("恢復播放後繼續累加到 180 秒", cur.watchedSeconds === 180, cur.watchedSeconds);
+
+    // 拖曳進度條：呼叫端送的是真實流逝時間，不是影片位置差值
+    await immersionStore.addWatchedSeconds(s.id, 2);
+    cur = await immersionStore.getSession(s.id);
+    check("從 02:00 拖到 20:00 只增加真實流逝的秒數，不是 18 分鐘",
+      cur.watchedSeconds === 182, cur.watchedSeconds);
+
+    const ended = await immersionStore.endSession(s.id);
+    check("結束 session 會寫入 endedAt", !!ended.endedAt);
+
+    // 太短的 session 要丟掉
+    const tiny = await immersionStore.startSession({ videoId: "VIDEO_X" });
+    await immersionStore.addWatchedSeconds(tiny.id, 3);
+    const tinyEnded = await immersionStore.endSession(tiny.id);
+    check("太短的觀看不會污染統計", tinyEnded.discarded === true);
+    check("太短的 session 真的被刪掉", (await immersionStore.getSession(tiny.id)) === undefined);
+
+    const total = await immersionStore.getTotalSeconds();
+    check("總沉浸秒數正確", total === 182, total);
+    const today = await immersionStore.getTodaySeconds();
+    check("今日沉浸秒數正確", today === 182, today);
+
+    await immersionStore.addWatchedSeconds(s.id, -50);
+    check("負數增量被忽略（時鐘回撥之類的異常）",
+      (await immersionStore.getSession(s.id)).watchedSeconds === 182);
+  }
+
+  // ========== 9. 設定 ==========
+  section("9. 設定");
+  {
+    const def = await settingsStore.getSettings();
+    check("有預設值", def.dailyGoalMinutes === 30 && def.targetLanguage === "en");
+    check("快捷鍵有預設值", def.shortcuts.previousSentence === "a" && def.shortcuts.nextSentence === "d");
+
+    await settingsStore.saveSettings({ dailyGoalMinutes: 60, theme: "dark" });
+    const saved = await settingsStore.getSettings();
+    check("設定有存起來", saved.dailyGoalMinutes === 60 && saved.theme === "dark");
+    check("沒改到的設定保持原值", saved.targetLanguage === "en");
+    check("巢狀的快捷鍵設定不會在存檔後消失", saved.shortcuts.replaySentence === "s");
+
+    await settingsStore.saveSettings({ shortcuts: { nextSentence: "f" } });
+    const s2 = await settingsStore.getSettings();
+    check("只改一個快捷鍵時其他快捷鍵保留",
+      s2.shortcuts.nextSentence === "f" && s2.shortcuts.previousSentence === "a",
+      JSON.stringify(s2.shortcuts));
+
+    check("同時寫回舊 key，讓既有頁面不會壞掉",
+      memStore.dailyGoalMinutes === 60 && memStore.themePreference === "dark");
+  }
+
+  // ========== 10. 舊資料搬移 ==========
+  section("10. 舊版資料搬移（不能弄丟使用者已有的紀錄）");
+  {
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase("flowstudy");
+      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    });
+    for (const k of Object.keys(memStore)) delete memStore[k];
+
+    Object.assign(memStore, {
+      learningWords: {
+        "run": { word: "run", sentence: "I need to run.", addedAt: Date.parse("2026-01-02T10:00:00") },
+        "jump": { word: "Jump", sentence: "", addedAt: Date.parse("2026-01-03T10:00:00") },
+      },
+      "immersion:2026-01-02": 1800,
+      "immersion:2026-01-03": 3600,
+      immersion_total_seconds: 5400,
+    });
+
+    const migrate = await import("./core/storage/migrate.js?v=2");
+    const vocab2 = await import("./core/storage/vocabularyStore.js?v=2");
+    const imm2 = await import("./core/storage/immersionStore.js?v=2");
+
+    const result = await migrate.runMigrationIfNeeded();
+    check("搬移了 2 個單字", result.words === 2, JSON.stringify(result));
+    check("搬移了有句子的那一筆出現紀錄", result.occurrences === 1, result.occurrences);
+    check("搬移了 2 天的沉浸紀錄", result.immersionDays === 2, result.immersionDays);
+
+    const words = await vocab2.getAllWords();
+    check("單字查得到", words.length === 2);
+    check("保留了原本的建立時間", words.some(w => w.createdAt.startsWith("2026-01-02")));
+    check("顯示文字保留原始大小寫（Jump）", words.some(w => w.term === "Jump"));
+
+    const seconds = await imm2.getTotalSeconds();
+    check("沉浸總時數搬移正確（1800 + 3600）", seconds === 5400, seconds);
+
+    const sessions = await imm2.getAllSessions();
+    check("舊的每日資料標記為 legacy，可與實際記錄區分",
+      sessions.every(s => s.source === "legacy-daily"));
+
+    const again = await migrate.runMigrationIfNeeded();
+    check("重複執行不會搬第二次（不會變成雙倍）", again.skipped === true);
+    check("舊資料沒有被刪除（搬移出錯時還能重來）", !!memStore.learningWords);
+  }
+
+  // ========== 11. 完整資料流（使用者列出的測試情境）==========
+  section("11. 完整資料流：看影片 → 收藏 → 複習 → 分析");
+  {
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase("flowstudy");
+      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    });
+    for (const k of Object.keys(memStore)) delete memStore[k];
+
+    const V = await import("./core/storage/vocabularyStore.js?v=3");
+    const O = await import("./core/storage/occurrenceStore.js?v=3");
+    const R = await import("./core/storage/reviewStore.js?v=3");
+    const I = await import("./core/storage/immersionStore.js?v=3");
+    const Q = await import("./core/srs/dueQueue.js?v=3");
+    const A = await import("./core/analytics/analytics.js?v=3");
+
+    // 1~2. 開影片、播放 60 秒
+    const sess = await I.startSession({ videoId: "dQw4w9WgXcQ", videoTitle: "測試影片" });
+    await I.addWatchedSeconds(sess.id, 60);
+
+    // 3~4. 選取並收藏 "run"
+    const saved = await V.saveWordFromSubtitle({
+      term: "run", translation: "跑步",
+      videoId: "dQw4w9WgXcQ", videoTitle: "測試影片",
+      sentence: "I need to run every morning.", startTime: 42.5, endTime: 45.1,
+    });
+
+    // 5~6. 驗證
+    check("① 建立了 VocabularyWord", !!saved.word && saved.word.term === "run");
+    check("② 出現紀錄帶有當下的句子", saved.occurrence.sentence === "I need to run every morning.");
+    check("③ 出現紀錄關聯到正確的影片與時間",
+      saved.occurrence.videoId === "dQw4w9WgXcQ" && saved.occurrence.startTime === 42.5);
+
+    // 7~8. 暫停，沉浸停止累加
+    const beforePause = (await I.getSession(sess.id)).watchedSeconds;
+    await new Promise(r => setTimeout(r, 50)); // 暫停期間完全沒有呼叫 addWatchedSeconds
+    check("④ 暫停後沉浸秒數停止增加",
+      (await I.getSession(sess.id)).watchedSeconds === beforePause, beforePause);
+
+    // 9~10. 複習頁：run 應該是新卡片
+    const queue = await Q.getDueQueue({ limit: 50 });
+    const card = queue.find(w => w.normalizedTerm === "run");
+    check("⑤ run 出現在複習佇列且狀態是 new", !!card && card.state === "new", card && card.state);
+
+    // 11~13. 主動回想 → 揭曉 → 按 Good
+    const beforeReview = { dueAt: card.dueAt, state: card.state };
+    const reviewed = await R.submitReview(card.id, "good");
+
+    // 14~16. 驗證
+    check("⑥ 建立了 ReviewEvent", !!reviewed.reviewEvent);
+    check("⑦ dueAt 改變了", reviewed.word.dueAt !== beforeReview.dueAt);
+    check("⑧ 單字狀態改變了", reviewed.word.state !== beforeReview.state,
+      `${beforeReview.state} → ${reviewed.word.state}`);
+
+    // 17~20. 分析頁
+    const { startIso, endIso } = A.resolveRange("week");
+    const [sessions, events, allWords] = await Promise.all([
+      I.getSessionsBetween(startIso, endIso),
+      R.getReviewEventsBetween(startIso, endIso),
+      V.getAllWords(),
+    ]);
+    const snapshot = A.buildAnalyticsSnapshot({
+      sessions, reviewEvents: events, words: allWords, allWords, range: "week",
+    });
+    check("⑨ 分析看得到沉浸時間",
+      snapshot.dailyStats.reduce((a, d) => a + d.immersionSeconds, 0) === 60);
+    check("⑩ 分析看得到單字數量", snapshot.stateBreakdown.total === 1, snapshot.stateBreakdown.total);
+    check("⑪ 分析看得到複習統計", snapshot.retention.total === 1 && snapshot.retention.rate === 1,
+      JSON.stringify(snapshot.retention));
+    check("⑫ 學習效率算得出來", snapshot.efficiency.wordsPerHour !== null);
+
+    // 21~22. 回到單字頁
+    const word = await V.getWord(card.id);
+    const occs = await O.getOccurrencesForWord(card.id);
+    check("⑬ 單字頁看得到複習狀態", word.state === reviewed.word.state && word.reviewCount === 1);
+    check("⑭ 單字頁看得到來源影片與句子",
+      occs[0].videoTitle === "測試影片" && occs[0].sentence.includes("run"));
+
+    // 23~24. 重新載入（模擬重新整理）
+    const V2 = await import("./core/storage/vocabularyStore.js?v=4");
+    const reloaded = await V2.getWord(card.id);
+    check("⑮ 重新整理後資料仍然存在",
+      !!reloaded && reloaded.reviewCount === 1 && reloaded.state === word.state);
+  }
+
+  // ========== 12. 異常狀況 ==========
+  section("12. 異常狀況不會讓畫面崩潰");
+  {
+    const V = await import("./core/storage/vocabularyStore.js?v=5");
+    let threw = false;
+    try { await V.saveWordFromSubtitle({ term: "   " }); } catch (e) { threw = true; }
+    check("空白單字會明確拒絕", threw);
+
+    check("查不到的單字回傳 undefined 而非丟例外",
+      (await V.getWord("不存在")) === undefined);
+    check("更新不存在的單字回傳 null", (await V.updateWord("不存在", { term: "x" })) === null);
+    check("用空字串查詢不會當機", (await V.findWordByTerm("")) === null);
+
+    const q = await V.queryWords({ search: "完全不存在的字串zzz" });
+    check("搜尋不到結果時回傳空陣列", q.items.length === 0 && q.total === 0);
+
+    check("空的分析資料不會當機",
+      A_safe(() => analytics.buildAnalyticsSnapshot({
+        sessions: [], reviewEvents: [], words: [], allWords: [], range: "week" })));
+  }
+
+  function A_safe(fn) { try { fn(); return true; } catch (e) { lines.push("      例外：" + e.message); return false; } }
+
+  render();
+}
+
+run().catch((err) => {
+  lines.push("\n執行時發生例外：" + (err && err.stack ? err.stack : err));
+  render();
+});
+</script>
+</body>
+</html>

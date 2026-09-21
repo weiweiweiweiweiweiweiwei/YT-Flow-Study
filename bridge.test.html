@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>FlowStudy 橋接層整合測試</title>
+<style>
+ body{font-family:"Segoe UI","Microsoft JhengHei",sans-serif;margin:24px}
+ pre{background:#f6f7f9;padding:16px;border-radius:8px;white-space:pre-wrap;line-height:1.55;font-size:13px}
+</style>
+</head>
+<body>
+<h1>FlowStudy 橋接層整合測試</h1>
+<p>把 <code>yt-player-bridge.js</code> 放進一個模擬的 YouTube 頁面跑，
+模擬環境刻意重現實測到的真實行為：<b>timedtext 請求少了 pot 參數時會回 HTTP 200 但 body 是空的</b>。
+直接用瀏覽器打開這個檔案就會跑測試。</p>
+<pre id="out">執行中…</pre>
+
+<script src="sentence-timeline.js"></script>
+<script src="test-fixture-asr.js"></script>
+<script>
+// ===== 1. 在載入橋接層「之前」先架好模擬環境 =====
+window.__testLog = [];
+const REAL_FETCH = window.fetch.bind(window);
+window.__fetchedUrls = [];
+
+window.fetch = function (input, init) {
+  const url = typeof input === "string" ? input : (input && input.url) || "";
+  if (url.indexOf("/api/timedtext") !== -1) {
+    window.__fetchedUrls.push(url);
+    const u = new URL(url, location.origin);
+    // 這就是實測到的真實行為：沒有 pot → 200 但內容是空的
+    if (!u.searchParams.has("pot")) {
+      return Promise.resolve(new Response("", { status: 200 }));
+    }
+    return Promise.resolve(new Response(JSON.stringify(window.FLOWSTUDY_TEST_ASR), { status: 200 }));
+  }
+  return REAL_FETCH(input, init);
+};
+
+// 模擬 YouTube 播放器物件。注意 getPlayerResponse 是「頁面腳本掛上去的方法」，
+// 這正是 content script（隔離世界）看不到、必須靠 MAIN world 橋接層才拿得到的東西。
+const player = document.createElement("div");
+player.id = "movie_player";
+document.body.appendChild(player);
+
+const SIGNED = "v=TESTVID&ei=abc&caps=asr&expire=999&sparams=ip,ipbits,expire,v,ei,caps&signature=SIG&key=yt8";
+player.getPlayerResponse = function () {
+  return {
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: [
+      { languageCode: "ja",    vssId: ".ja",   baseUrl: "https://www.youtube.com/api/timedtext?" + SIGNED + "&lang=ja",
+        name: { simpleText: "日文" } },
+      { languageCode: "es-419",vssId: ".es-419", baseUrl: "https://www.youtube.com/api/timedtext?" + SIGNED + "&lang=es-419",
+        name: { simpleText: "西班牙文" } },
+      { languageCode: "en",    vssId: ".en",   baseUrl: "https://www.youtube.com/api/timedtext?" + SIGNED + "&lang=en",
+        name: { simpleText: "英文" } },
+      { languageCode: "en", kind: "asr", vssId: "a.en",
+        baseUrl: "https://www.youtube.com/api/timedtext?" + SIGNED + "&lang=en&kind=asr",
+        name: { simpleText: "英文 (自動產生)" } },
+    ] } },
+  };
+};
+let selectedTrack = null;
+player.getOption = function (mod, key) {
+  if (mod === "captions" && key === "track") return selectedTrack;
+  return null;
+};
+</script>
+
+<script src="yt-player-bridge.js"></script>
+
+<script>
+(function () {
+  const lines = [];
+  let pass = 0, fail = 0;
+  function check(name, cond, detail) {
+    if (cond) { pass++; lines.push("  ✓ " + name); }
+    else { fail++; lines.push("  ✗ " + name + (detail ? "\n      → " + detail : "")); }
+  }
+  function section(t) { lines.push("\n" + t); }
+
+  let reqId = 0;
+  function requestCues(videoId, prefs) {
+    return new Promise((resolve) => {
+      const id = ++reqId;
+      const onMsg = (e) => {
+        const m = e.data;
+        if (!m || m.channel !== "flowstudy-to-content") return;
+        if (m.type === "cues-result" && m.requestId === id) {
+          window.removeEventListener("message", onMsg);
+          resolve(m);
+        }
+      };
+      window.addEventListener("message", onMsg);
+      window.postMessage({ channel: "flowstudy-to-page", type: "request-cues",
+                           requestId: id, videoId, prefs }, location.origin);
+      setTimeout(() => { window.removeEventListener("message", onMsg); resolve({ ok: false, reason: "timeout" }); }, 6000);
+    });
+  }
+
+  // 橋接層送出的 bridge-ready 廣播
+  let sawReady = false;
+  window.addEventListener("message", (e) => {
+    if (e.data && e.data.channel === "flowstudy-to-content" && e.data.type === "bridge-ready") sawReady = true;
+  });
+
+  let sawCaptured = null;
+  window.addEventListener("message", (e) => {
+    if (e.data && e.data.channel === "flowstudy-to-content" && e.data.type === "timedtext-captured") {
+      sawCaptured = e.data.videoId;
+    }
+  });
+
+  async function run() {
+    section("1. 橋接層安裝");
+    check("已標記為安裝完成", window.__flowStudyBridgeInstalled === true);
+    check("fetch 被包裝過（但仍可正常使用）", typeof window.fetch === "function");
+
+    section("2. 還沒攔到帶 pot 的網址時（使用者剛進頁面 / 字幕還沒載入）");
+    {
+      window.__fetchedUrls.length = 0;
+      const r = await requestCues("TESTVID", { preferredLangs: ["en"] });
+      check("回報失敗而不是丟出錯誤", r && r.ok === false, JSON.stringify(r));
+      check("失敗原因是『還在等字幕請求』", r.reason === "awaiting-timedtext", r.reason);
+      check("確實有試過裸 baseUrl", window.__fetchedUrls.length > 0, window.__fetchedUrls.length + " 次");
+      check("裸 baseUrl 都沒有 pot（重現真實失敗樣態）",
+            window.__fetchedUrls.every(u => u.indexOf("pot=") === -1));
+    }
+
+    section("3. 攔截播放器自己發出的 timedtext 請求");
+    {
+      // 模擬 YouTube 播放器載入字幕：這個網址帶著有效的 pot
+      const playerUrl = "https://www.youtube.com/api/timedtext?" + SIGNED +
+                        "&lang=ja&potc=1&pot=REALPOTTOKEN&fmt=json3&c=WEB";
+      await window.fetch(playerUrl);
+      await new Promise(r => setTimeout(r, 50));
+      check("有通知 content script『攔到字幕網址了』", sawCaptured === "TESTVID", String(sawCaptured));
+    }
+
+    section("4. 用攔到的網址取得字幕（自動換成想要的語言）");
+    {
+      window.__fetchedUrls.length = 0;
+      const r = await requestCues("TESTVID", { preferredLangs: ["en"] });
+      check("成功取得字幕", r.ok === true, JSON.stringify(r.reason || ""));
+      check("有解析出字幕片段", r.cues && r.cues.length > 100, r.cues && r.cues.length);
+      check("片段有 text / start / end 三個欄位",
+            r.cues && r.cues.every(c => typeof c.text === "string" && Number.isFinite(c.start) && Number.isFinite(c.end)));
+      check("自動產生字幕有帶字級時間戳",
+            r.cues && r.cues.some(c => Array.isArray(c.words) && c.words.length > 1));
+      check("aAppend 換行雜訊已被濾掉（片段都有實際內容）",
+            r.cues && r.cues.every(c => c.text.trim().length > 0));
+
+      const used = window.__fetchedUrls.find(u => u.indexOf("pot=") !== -1);
+      check("實際使用的網址帶著攔到的 pot", !!used, window.__fetchedUrls.join("\n        "));
+      if (used) {
+        const u = new URL(used, location.origin);
+        check("lang 已換成英文（原本攔到的是日文）", u.searchParams.get("lang") === "en", u.searchParams.get("lang"));
+        check("fmt 設成 json3", u.searchParams.get("fmt") === "json3");
+        check("沒有帶 tlang（不使用翻譯字幕）", !u.searchParams.has("tlang"));
+        check("簽章參數原封不動", u.searchParams.get("signature") === "SIG");
+      }
+      check("有回報選中的字幕軌資訊", !!r.track, JSON.stringify(r.track));
+      check("優先選人工字幕而不是自動產生", r.track && r.track.kind === "", JSON.stringify(r.track));
+    }
+
+    section("5. 尊重使用者在播放器上選的字幕軌");
+    {
+      selectedTrack = { languageCode: "en", kind: "asr", vss_id: "a.en" };
+      window.__fetchedUrls.length = 0;
+      const r = await requestCues("TESTVID", { preferredLangs: ["en"] });
+      check("成功取得字幕", r.ok === true, r.reason);
+      check("選中的是使用者指定的『自動產生』軌", r.track && r.track.kind === "asr", JSON.stringify(r.track));
+      check("有標記為自動產生字幕", r.track && r.track.isAutoGenerated === true);
+      const used = window.__fetchedUrls.find(u => u.indexOf("pot=") !== -1);
+      if (used) {
+        const u = new URL(used, location.origin);
+        check("網址的 kind 換成 asr", u.searchParams.get("kind") === "asr", u.searchParams.get("kind"));
+      }
+      selectedTrack = null;
+    }
+
+    section("6. 完整流程：橋接層 → 斷句引擎");
+    {
+      const r = await requestCues("TESTVID", { preferredLangs: ["en"] });
+      const sentences = window.FlowStudySentences.buildSentenceTimeline(r.cues);
+      check("產生句子時間軸", sentences.length > 0, sentences.length + " 句");
+      check("句子數量少於字幕片段數", sentences.length < r.cues.length,
+            `${r.cues.length} 片段 → ${sentences.length} 句`);
+      check("start 遞增", sentences.every((s, i) => i === 0 || s.start >= sentences[i-1].start));
+      check("每一句都有完整欄位",
+            sentences.every(s => Number.isFinite(s.index) && typeof s.text === "string" &&
+                                 Number.isFinite(s.start) && Number.isFinite(s.end) &&
+                                 Number.isFinite(s.cueStartIndex) && Number.isFinite(s.cueEndIndex)));
+      const avgDur = sentences.reduce((a,s)=>a+(s.end-s.start),0)/sentences.length;
+      check("平均每句長度適合重播（1~10 秒）", avgDur > 1 && avgDur < 10, avgDur.toFixed(2) + " 秒");
+      lines.push(`      ${r.cues.length} 片段 → ${sentences.length} 句，平均 ${avgDur.toFixed(2)} 秒/句`);
+    }
+
+    section("7. 沒有字幕的影片");
+    {
+      const original = player.getPlayerResponse;
+      player.getPlayerResponse = () => ({});           // 沒有 captions 欄位
+      const r = await requestCues("NOCAPTIONS", { preferredLangs: ["en"] });
+      check("明確回報『這部影片沒有字幕軌』", r.ok === false && r.reason === "no-caption-track",
+            JSON.stringify(r));
+      lines.push("      （content.js 收到這個原因就會停止重試，直接顯示「無字幕」）");
+      player.getPlayerResponse = original;
+    }
+
+    section("8. 播放器還沒準備好");
+    {
+      const original = player.getPlayerResponse;
+      player.getPlayerResponse = () => { throw new Error("player not ready"); };
+      const saved = window.ytInitialPlayerResponse;
+      window.ytInitialPlayerResponse = undefined;
+      const r = await requestCues("TESTVID", { preferredLangs: ["en"] });
+      check("回報 player-not-ready（可重試），不會當機",
+            r.ok === false && r.reason === "player-not-ready", JSON.stringify(r));
+      player.getPlayerResponse = original;
+      window.ytInitialPlayerResponse = saved;
+    }
+
+    section("9. 不理會非本頻道的訊息");
+    {
+      let exploded = false;
+      try {
+        window.postMessage({ channel: "someone-elses-channel", type: "request-cues" }, location.origin);
+        window.postMessage("plain string", location.origin);
+        window.postMessage(null, location.origin);
+        await new Promise(r => setTimeout(r, 100));
+      } catch (e) { exploded = true; }
+      check("外部訊息不會造成錯誤", !exploded);
+      check("橋接層仍然正常運作", window.__flowStudyBridgeInstalled === true);
+    }
+
+    lines.push("\n" + "=".repeat(52));
+    lines.push(`通過 ${pass} 項，失敗 ${fail} 項`);
+    lines.push("=".repeat(52));
+    document.getElementById("out").textContent = lines.join("\n");
+    document.title = fail === 0 ? "ALL PASS" : ("FAIL " + fail);
+  }
+
+  setTimeout(() => {
+    check("橋接層有廣播 bridge-ready", sawReady);
+    run();
+  }, 100);
+})();
+</script>
+</body>
+</html>

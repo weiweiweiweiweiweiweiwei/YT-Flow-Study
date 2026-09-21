@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>FlowStudy 斷句引擎測試</title>
+<style>
+  body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; margin: 24px; background:#fff; color:#111; }
+  pre { background:#f6f7f9; padding:16px; border-radius:8px; white-space:pre-wrap; line-height:1.55; font-size:13px; }
+  h1 { font-size:18px; }
+  .hint { color:#666; font-size:13px; }
+</style>
+</head>
+<body>
+<h1>FlowStudy 斷句引擎測試</h1>
+<p class="hint">
+  直接用瀏覽器打開這個檔案就會跑測試。改了 <code>sentence-timeline.js</code> 的斷句規則之後，
+  重新整理這一頁就能確認有沒有把原本正確的行為改壞。
+</p>
+<pre id="out">執行中…</pre>
+
+<script src="sentence-timeline.js"></script>
+<script src="test-fixture-asr.js"></script>
+<script>
+(function () {
+  const S = window.FlowStudySentences;
+  const lines = [];
+  let pass = 0, fail = 0;
+
+  function check(name, condition, detail) {
+    if (condition) { pass++; lines.push("  ✓ " + name); }
+    else { fail++; lines.push("  ✗ " + name + (detail ? "\n      → " + detail : "")); }
+  }
+  function section(title) { lines.push("\n" + title); }
+  function texts(sentences) { return sentences.map(s => s.text); }
+
+  // 一個小工具：用「一句話一個 cue」的簡潔寫法產生測試資料
+  function cues(list) {
+    return list.map(([text, start, end]) => ({ text, start, end }));
+  }
+
+  // ========== 1. 一句話橫跨多個字幕片段 ==========
+  section("1. 一句話橫跨多個字幕片段（核心需求）");
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["Today we're going to", 10.0, 12.0],
+      ["talk about something interesting.", 12.0, 14.5],
+    ]));
+    check("合併成 1 句", out.length === 1, JSON.stringify(texts(out)));
+    check("文字正確", out[0] && out[0].text === "Today we're going to talk about something interesting.",
+          out[0] && out[0].text);
+    check("start 取第一個片段的開始 (10.0)", out[0] && Math.abs(out[0].start - 10.0) < 0.01, out[0] && out[0].start);
+    check("end 取最後一個片段的結束 (14.5)", out[0] && Math.abs(out[0].end - 14.5) < 0.2, out[0] && out[0].end);
+    check("cueStartIndex=0 / cueEndIndex=1",
+          out[0] && out[0].cueStartIndex === 0 && out[0].cueEndIndex === 1,
+          out[0] && `${out[0].cueStartIndex}/${out[0].cueEndIndex}`);
+  }
+
+  // ========== 2. 中間有停頓但句子沒講完 ==========
+  section("2. 有停頓但句子沒結束時不可以斷開");
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["Yesterday I went to", 5.0, 6.4],
+      ["the store.", 7.1, 8.3],   // 中間有 0.7 秒空檔
+    ]));
+    check("仍然是 1 句（'to' 是接續詞）", out.length === 1, JSON.stringify(texts(out)));
+  }
+  {
+    // 對照組：長沉默 + 下一句明顯是新開始 → 應該要斷開
+    const out = S.buildSentenceTimeline(cues([
+      ["I really enjoyed the movie", 5.0, 7.0],
+      ["Something completely different happened", 12.0, 15.0],  // 5 秒沉默
+    ]));
+    check("長沉默 + 大寫開頭 → 斷成 2 句", out.length === 2, JSON.stringify(texts(out)));
+  }
+
+  // ========== 3. 一個字幕片段裡面有兩句話 ==========
+  section("3. 一個字幕片段裡面含有兩句話");
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["That was amazing. Now let me show you", 20.0, 24.0],
+      ["how it actually works.", 24.0, 26.0],
+    ]));
+    check("切成 2 句", out.length === 2, JSON.stringify(texts(out)));
+    check("第 1 句 = 'That was amazing.'", out[0] && out[0].text === "That was amazing.", out[0] && out[0].text);
+    check("第 2 句把後面的片段接起來",
+          out[1] && out[1].text === "Now let me show you how it actually works.", out[1] && out[1].text);
+    check("第 2 句的 start 落在片段中間（不是片段開頭）",
+          out[1] && out[1].start > 20.0 && out[1].start < 24.0, out[1] && out[1].start);
+  }
+
+  // ========== 4. 非常短的句子 ==========
+  section("4. 非常短的句子");
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["Do you agree?", 1.0, 2.0],
+      ["Yeah.", 2.2, 2.8],
+      ["Let's move on.", 3.0, 4.2],
+    ]));
+    check("切成 3 句", out.length === 3, JSON.stringify(texts(out)));
+    check("'Yeah.' 自成一句", out[1] && out[1].text === "Yeah.", out[1] && out[1].text);
+  }
+
+  // ========== 5. 縮寫不可以被當成句尾 ==========
+  section("5. 縮寫 / 首字母縮寫不可以被當成句尾");
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["Mr. Smith went to Washington.", 1.0, 4.0],
+    ]));
+    check("'Mr.' 不斷句 → 1 句", out.length === 1, JSON.stringify(texts(out)));
+  }
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["He works at the U.S. Department of Energy.", 1.0, 5.0],
+    ]));
+    check("'U.S.' 不斷句 → 1 句", out.length === 1, JSON.stringify(texts(out)));
+  }
+
+  // ========== 6. 完全沒有標點的自動字幕 ==========
+  // 實測：真實 YouTube ASR 字幕可能整軌 11,751 個字元裡 0 個句號。
+  // 這種情況必須改用「停頓長度 + 詞性」斷句，不能死等標點。
+  section("6. 完全沒有標點的自動產生字幕");
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["thank", 6.2, 8.4],
+      ["you I'm uh honored to be with you today", 11.0, 15.4],
+      ["at your commencement from one of the", 15.4, 18.0],
+      ["finest universities in the world", 18.0, 20.5],
+      ["I never graduated from college", 24.0, 27.0],   // 3.5 秒沉默
+    ]));
+    check("有切出多句（不是全部黏成一坨）", out.length >= 2, JSON.stringify(texts(out)));
+    check("不是每個片段各自一句（那樣等於沒斷句）", out.length < 5, out.length + " 句");
+    check("'the' 結尾的片段有跟下一段接起來",
+          out.every(s => !/\bthe$/.test(s.text)), JSON.stringify(texts(out)));
+    lines.push("      實際結果：" + JSON.stringify(texts(out)));
+  }
+
+  // ========== 7. 髒資料：空片段、重複、壞掉的時間戳 ==========
+  section("7. 髒資料處理");
+  {
+    const out = S.buildSentenceTimeline([
+      { text: "   ", start: 1, end: 2 },                      // 空白
+      { text: "Hello there.", start: 3, end: 4 },
+      { text: "Hello there.", start: 3.1, end: 4.1 },         // 重複
+      { text: "Broken timestamp.", start: NaN, end: 9 },      // 壞掉
+      { text: "No end field.", start: 10 },                   // 缺 end
+      null,                                                    // null
+      { text: "Last one.", start: 12, end: 13 },
+    ]);
+    check("空白片段被丟掉", out.every(s => s.text.trim().length > 0));
+    check("重複片段只留一份", out.filter(s => s.text === "Hello there.").length === 1, JSON.stringify(texts(out)));
+    check("壞掉的時間戳被丟掉", out.every(s => Number.isFinite(s.start) && Number.isFinite(s.end)));
+    check("缺 end 的片段有被補上合理的結束時間", out.every(s => s.end > s.start));
+    check("null 不會造成當機", true);
+    lines.push("      實際結果：" + JSON.stringify(texts(out)));
+  }
+  {
+    const out = S.buildSentenceTimeline([]);
+    check("空陣列回傳空陣列", Array.isArray(out) && out.length === 0);
+    check("非陣列輸入不會當機", S.buildSentenceTimeline(null).length === 0);
+  }
+
+  // ========== 8. 時間重疊（ASR 滑動視窗的典型症狀） ==========
+  // 實測真實資料：某個片段 18.8s 開始、持續 7.16s（= 到 25.96s），
+  // 但下一個片段 21.8s 就開始了。不夾住的話「現在是第幾句」會判斷錯亂。
+  section("8. 時間重疊修正");
+  {
+    const n = S.normalizeCues([
+      { text: "We're no strangers to", start: 18.8, end: 25.96 },
+      { text: "love you know the rules", start: 21.8, end: 29.1 },
+      { text: "and so do I", start: 25.0, end: 31.0 },
+    ]);
+    check("前一段的 end 不會跨進後一段",
+          n[0].end <= n[1].start + 0.001 && n[1].end <= n[2].start + 0.001,
+          JSON.stringify(n.map(c => [c.start, c.end])));
+    check("每段仍然 end > start", n.every(c => c.end > c.start));
+  }
+
+  // ========== 9. 一個片段內有換行 + HTML 實體 ==========
+  section("9. 換行與 HTML 實體");
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["You know the rules\nand so do I.", 22.6, 27.0],
+    ]));
+    check("換行被收斂成空格", out[0] && out[0].text === "You know the rules and so do I.", out[0] && out[0].text);
+  }
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["It&#39;s Bob &amp; Alice&#39;s idea.", 1.0, 4.0],
+    ]));
+    check("HTML 實體被解碼", out[0] && out[0].text === "It's Bob & Alice's idea.", out[0] && out[0].text);
+  }
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["It&amp;#39;s double encoded.", 1.0, 4.0],
+    ]));
+    check("重複編碼的實體也能解開", out[0] && out[0].text === "It's double encoded.", out[0] && out[0].text);
+  }
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["<b>Bold</b> and <i>italic</i> text here.", 1.0, 4.0],
+    ]));
+    check("格式標籤被移除", out[0] && out[0].text === "Bold and italic text here.", out[0] && out[0].text);
+  }
+
+  // ========== 10. 換人說話 ==========
+  section("10. 換人說話");
+  {
+    const out = S.buildSentenceTimeline(cues([
+      [">> I think we should go", 1.0, 3.0],
+      [">> But I disagree", 3.2, 5.0],
+    ]));
+    check("'>>' 標記會切開", out.length === 2, JSON.stringify(texts(out)));
+  }
+  {
+    const out = S.buildSentenceTimeline(cues([
+      ["[Music]", 1.0, 5.0],
+      ["Welcome back everyone.", 5.2, 7.0],
+    ]));
+    check("[Music] 自成一句", out.length === 2 && out[0].text === "[Music]", JSON.stringify(texts(out)));
+  }
+
+  // ========== 11. 字級時間戳 ==========
+  section("11. 字級時間戳（自動字幕才有，用來提高起訖時間精度）");
+  {
+    const out = S.buildSentenceTimeline([{
+      text: "We're no strangers to love. You know the rules.",
+      start: 18.8, end: 26.0,
+      words: [
+        { text: "We're",     start: 18.80 },
+        { text: " no",       start: 19.04 },
+        { text: " strangers",start: 19.36 },
+        { text: " to",       start: 19.84 },
+        { text: " love.",    start: 20.10 },
+        { text: " You",      start: 21.80 },
+        { text: " know",     start: 22.04 },
+        { text: " the",      start: 22.28 },
+        { text: " rules.",   start: 22.60 },
+      ],
+    }]);
+    check("切成 2 句", out.length === 2, JSON.stringify(texts(out)));
+    check("第 2 句的 start 用字級時間 21.80（不是片段開頭 18.8）",
+          out[1] && Math.abs(out[1].start - 21.80) < 0.01, out[1] && out[1].start);
+  }
+
+  // ========== 12. 目前播到第幾句 ==========
+  section("12. getCurrentSentenceIndex（二分搜尋 + 穩定性）");
+  {
+    const sentences = S.buildSentenceTimeline(cues([
+      ["First sentence here.", 10.0, 12.0],
+      ["Second sentence here.", 15.0, 17.0],
+      ["Third sentence here.", 20.0, 22.0],
+    ]));
+    check("建立 3 句", sentences.length === 3, JSON.stringify(texts(sentences)));
+    check("第一句開始前 → -1", S.getCurrentSentenceIndex(5.0, sentences) === -1);
+    check("句子正中間 → 正確索引", S.getCurrentSentenceIndex(11.0, sentences) === 0);
+    check("剛好在 start → 正確索引", S.getCurrentSentenceIndex(15.0, sentences) === 1);
+    check("空隙中停留在前一句（不會跳回 -1）", S.getCurrentSentenceIndex(13.5, sentences) === 0,
+          "得到 " + S.getCurrentSentenceIndex(13.5, sentences));
+    check("最後一句之後停在最後一句", S.getCurrentSentenceIndex(99.0, sentences) === 2);
+    check("空陣列 → -1", S.getCurrentSentenceIndex(10, []) === -1);
+    check("時間是 NaN → -1", S.getCurrentSentenceIndex(NaN, sentences) === -1);
+
+    // 單調性：時間往前走，索引不可以倒退（這是 a/s/d 不會跳來跳去的保證）
+    let prev = -1, monotonic = true;
+    for (let t = 0; t < 30; t += 0.05) {
+      const i = S.getCurrentSentenceIndex(t, sentences);
+      if (i < prev) { monotonic = false; break; }
+      prev = i;
+    }
+    check("時間遞增時索引只增不減（索引穩定）", monotonic);
+  }
+
+  // ========== 13. 大量資料的效能 ==========
+  section("13. 效能（長片可能有數千句）");
+  {
+    const many = [];
+    for (let i = 0; i < 6000; i++) {
+      many.push({ text: "This is sentence number " + i + ".", start: i * 2, end: i * 2 + 1.8 });
+    }
+    const t0 = performance.now();
+    const out = S.buildSentenceTimeline(many);
+    const t1 = performance.now();
+    let sum = 0;
+    for (let i = 0; i < 20000; i++) sum += S.getCurrentSentenceIndex(Math.random() * 12000, out);
+    const t2 = performance.now();
+    check("6000 個片段建立時間軸 < 1000ms", (t1 - t0) < 1000, (t1 - t0).toFixed(1) + "ms");
+    check("20000 次索引查詢 < 200ms（二分搜尋）", (t2 - t1) < 200, (t2 - t1).toFixed(1) + "ms");
+    lines.push(`      建立 ${(t1 - t0).toFixed(1)}ms，查詢 20000 次 ${(t2 - t1).toFixed(1)}ms，共 ${out.length} 句`);
+  }
+
+  function finish() {
+    lines.push("\n" + "=".repeat(52));
+    lines.push(`通過 ${pass} 項，失敗 ${fail} 項`);
+    lines.push("=".repeat(52));
+    document.getElementById("out").textContent = lines.join("\n");
+    document.title = fail === 0 ? "ALL PASS" : `FAIL ${fail}`;
+  }
+
+  // ========== 14. 真實 YouTube 資料 ==========
+  // test-fixture-asr.js 裡是從 YouTube 實際抓下來的自動產生字幕。
+  // 合成的測試資料再怎麼寫，都不如拿真的資料驗證來得可靠。
+  section("14. 真實 YouTube 自動字幕資料");
+  Promise.resolve(window.FLOWSTUDY_TEST_ASR)
+    .then(data => {
+      if (!data || !data.events) throw new Error("no fixture");
+      // 這段是 yt-player-bridge.js 裡 parseJson3 的等價實作，用來測完整流程
+      const raw = [];
+      for (const ev of (data.events || [])) {
+        if (!ev.segs || !ev.segs.length) continue;
+        if (ev.aAppend) continue;
+        const start = Number(ev.tStartMs) / 1000;
+        if (!Number.isFinite(start)) continue;
+        const dur = Number(ev.dDurationMs);
+        const end = Number.isFinite(dur) && dur > 0 ? start + dur / 1000 : start + 2;
+        let text = ""; const words = [];
+        for (const seg of ev.segs) {
+          if (typeof seg.utf8 !== "string") continue;
+          text += seg.utf8;
+          const off = Number(seg.tOffsetMs);
+          words.push({ text: seg.utf8, start: start + (Number.isFinite(off) ? off / 1000 : 0) });
+        }
+        if (text.trim()) raw.push({ text, start, end, words });
+      }
+
+      const out = S.buildSentenceTimeline(raw);
+      check("真實資料有解析出片段", raw.length > 100, raw.length + " 個片段");
+      check("有產生句子", out.length > 0, out.length + " 句");
+      check("句子數少於片段數（確實有合併）", out.length < raw.length,
+            `${raw.length} 片段 → ${out.length} 句`);
+      check("所有句子 start 遞增（二分搜尋的前提）",
+            out.every((s, i) => i === 0 || s.start >= out[i - 1].start));
+      check("所有句子 end > start", out.every(s => s.end > s.start));
+      check("句子之間不重疊", out.every((s, i) => i === 0 || s.start >= out[i - 1].end - 0.001));
+      check("index 欄位連續", out.every((s, i) => s.index === i));
+      const avgWords = out.reduce((a, s) => a + s.text.split(" ").length, 0) / out.length;
+      check("平均句長合理（4~35 字）", avgWords >= 4 && avgWords <= 35, avgWords.toFixed(1) + " 字");
+      lines.push(`      ${raw.length} 個字幕片段 → ${out.length} 句，平均 ${avgWords.toFixed(1)} 字/句`);
+      lines.push("      前 8 句實際輸出：");
+      out.slice(0, 8).forEach(s => {
+        lines.push(`        [${s.start.toFixed(1)}s–${s.end.toFixed(1)}s] ${s.text}`);
+      });
+      finish();
+    })
+    .catch(() => {
+      lines.push("  － 略過（找不到 test-fixture-asr.js）");
+      finish();
+    });
+})();
+</script>
+</body>
+</html>

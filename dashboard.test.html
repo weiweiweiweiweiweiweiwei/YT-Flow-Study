@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>FlowStudy 面板測試</title>
+<link rel="stylesheet" href="review.css" />
+<link rel="stylesheet" href="review-pages.css" />
+<style>
+  #report{position:fixed;right:12px;bottom:12px;max-width:440px;max-height:52vh;overflow:auto;z-index:99;
+          background:#0f172a;color:#e2e8f0;font:12px/1.6 ui-monospace,monospace;padding:12px 14px;
+          border-radius:10px;white-space:pre-wrap;box-shadow:0 8px 30px rgba(0,0,0,.35)}
+</style>
+</head>
+<body>
+<pre id="report">執行中…</pre>
+
+<script type="module">
+const lines = [];
+let pass = 0, fail = 0;
+const check = (n, c, d) => {
+  if (c) { pass++; lines.push("✓ " + n); }
+  else { fail++; lines.push("✗ " + n + (d !== undefined ? "\n    → " + d : "")); }
+};
+const section = (t) => lines.push("\n" + t);
+const paint = () => {
+  lines.push("\n" + "─".repeat(36));
+  lines.push(`通過 ${pass}　失敗 ${fail}`);
+  document.getElementById("report").textContent = lines.join("\n");
+  document.title = fail === 0 ? "ALL PASS" : ("FAIL " + fail);
+};
+
+// ---- 擴充功能 API 的記憶體替身 ----
+const mem = {};
+globalThis.chrome = {
+  storage: {
+    local: {
+      get(keys, cb) {
+        let o = {};
+        if (keys == null) o = { ...mem };
+        else if (typeof keys === "string") { if (mem[keys] !== undefined) o[keys] = mem[keys]; }
+        else if (Array.isArray(keys)) keys.forEach(k => { if (mem[k] !== undefined) o[k] = mem[k]; });
+        if (cb) cb(o); return Promise.resolve(o);
+      },
+      set(o, cb) { Object.assign(mem, o); if (cb) cb(); return Promise.resolve(); },
+      remove(k, cb) { (Array.isArray(k)?k:[k]).forEach(x => delete mem[x]); if (cb) cb(); return Promise.resolve(); },
+    },
+    onChanged: { addListener(){}, removeListener(){} },
+  },
+  runtime: { lastError: null, sendMessage(m, cb) { if (cb) cb({ ok: true }); } },
+};
+
+const settle = (ms = 400) => new Promise(r => setTimeout(r, ms));
+const $  = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+const txt = () => $(".content-inner").textContent.replace(/\s+/g, " ");
+
+(async () => {
+  await new Promise(r => { const q = indexedDB.deleteDatabase("flowstudy"); q.onsuccess=q.onerror=q.onblocked=()=>r(); });
+
+  const V = await import("./core/storage/vocabularyStore.js");
+  const S = await import("./core/storage/settingsStore.js");
+  const { STORES, put } = await import("./core/storage/db.js");
+  const { createImmersionSession } = await import("./core/models.js");
+
+  await S.saveSettings({ dailyGoalMinutes: 25, theme: "light" });
+
+  // 兩部影片，各收藏幾個單字（全部都是「今天」收藏的）
+  const seed = [
+    ["VIDA", "影片 A：晨間routine", [["advantage","優勢","that gives you an unfair advantage",42.5],
+                                     ["fluent","流利的","She is fluent in three languages.",88],
+                                     ["context","情境","Words make sense in context.",120]]],
+    ["VIDB", "影片 B：咖啡店規則", [["serendipity","機緣湊巧","It was pure serendipity that we met.",12],
+                                    ["assume","假設","Don't assume you already know it.",65]]],
+  ];
+  for (const [vid, title, items] of seed) {
+    for (const [term, tr, sentence, start] of items) {
+      await V.saveWordFromSubtitle({ term, translation: tr, videoId: vid, videoTitle: title,
+                                     sentence, startTime: start, endTime: start + 3 });
+    }
+  }
+
+  // 過去 40 天的沉浸紀錄，讓方格圖與長條圖有資料
+  const today = new Date();
+  for (let d = 1; d < 40; d++) {
+    if (d % 3 === 1) continue;
+    const day = new Date(today); day.setDate(day.getDate() - d); day.setHours(14,0,0,0);
+    const s = createImmersionSession({ videoId: "VIDA", videoTitle: "影片 A", startedAt: day.toISOString() });
+    s.watchedSeconds = 300 + ((d * 137) % 3300); s.endedAt = day.toISOString();
+    await put(STORES.IMMERSION_SESSIONS, s);
+  }
+  // 今天固定 18 分鐘，用來驗證「18/30 = 60% 高度」這個絕對刻度
+  const t0 = createImmersionSession({ videoId: "VIDA", videoTitle: "影片 A" });
+  t0.watchedSeconds = 18 * 60;
+  await put(STORES.IMMERSION_SESSIONS, t0);
+
+  // 前天刻意放一筆 50 分鐘，超過基準 30，用來驗證破表的鋸齒截斷
+  const overDay = new Date(today); overDay.setDate(overDay.getDate() - 2); overDay.setHours(20,0,0,0);
+  const over = createImmersionSession({ videoId: "VIDA", videoTitle: "影片 A", startedAt: overDay.toISOString() });
+  over.watchedSeconds = 50 * 60; over.endedAt = overDay.toISOString();
+  await put(STORES.IMMERSION_SESSIONS, over);
+
+  // 把真正的 review.html 外殼載進來，再跑真正的 review.js
+  const html = await fetch("review.html").then(r => r.text());
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  document.body.insertBefore(doc.querySelector(".layout"), $("#report"));
+  await import("./review.js");
+  await settle(700);
+
+  section("1. 外殼與導覽");
+  const navNames = $$(".sidebar-nav .sidebar-link").map(a => a.textContent.trim().split(/\s+/)[0]);
+  check("側邊欄 3 個項目：首頁 / 記憶固化 / 設定", navNames.join(",") === "首頁,記憶固化,設定", navNames.join(","));
+  check("沒有「詞彙庫」這個名字了", !$(".sidebar").textContent.includes("詞彙庫"));
+  check("沒有數據分析頁", !$('[data-view="analytics"]'));
+  check("頂欄只有『儀表板』", $(".topbar").textContent.trim() === "儀表板", $(".topbar").textContent.trim());
+  check("側邊欄寬 288px", Math.round($(".sidebar").getBoundingClientRect().width) === 288);
+  // 這裡刻意檢查「CSS 規則」而不是 getComputedStyle。
+  // 側欄連結是 <a href>，瀏覽器對「已造訪連結」的 getComputedStyle 有隱私限制：
+  // 實測連 !important 的字面值都讀不出來（但畫面上是正常的）。
+  // 讀計算樣式會得到假陰性，所以改驗規則本身。
+  check("選取狀態用中性灰 rgb(228,228,231)", (() => {
+    const rules = [...document.styleSheets].flatMap(s => { try { return [...s.cssRules]; } catch { return []; } });
+    const rule = rules.find(r => r.selectorText === ".sidebar-link.active");
+    if (!rule) return false;
+    const bg = rule.style.backgroundColor || rule.style.background;
+    if (!bg.includes("--nav-active")) return false;
+    return getComputedStyle(document.documentElement).getPropertyValue("--nav-active").trim() === "rgb(228, 228, 231)";
+  })(), getComputedStyle(document.documentElement).getPropertyValue("--nav-active"));
+
+  {
+    const mark = $(".sidebar-logo-mark");
+    const ms = getComputedStyle(mark);
+    check("標誌是圓角底板托住圖示，不是裸放的圖",
+      ms.borderRadius === "11px" && ms.backgroundColor !== "rgba(0, 0, 0, 0)",
+      `${ms.borderRadius} / ${ms.backgroundColor}`);
+    check("底板是深色，黃色的 C 才有對比（白底上的淡色底板等於沒有）",
+      ms.backgroundColor === "rgb(17, 24, 39)", ms.backgroundColor);
+    check("深色主題另給一個值，不會跟深色側欄糊在一起", (() => {
+      document.documentElement.setAttribute("data-theme", "dark");
+      const dark = getComputedStyle(mark).backgroundColor;
+      const sidebarBg = getComputedStyle($(".sidebar")).backgroundColor;
+      document.documentElement.removeAttribute("data-theme");
+      return dark !== "rgb(17, 24, 39)" && dark !== sidebarBg;
+    })());
+    check("圖示有內縮，1px 外圈不會被蓋掉", ms.padding === "6px", ms.padding);
+    check("底板 38px，跟側欄標題對得起來",
+      Math.round(mark.getBoundingClientRect().width) === 38, mark.getBoundingClientRect().width);
+  }
+
+  section("2. 首頁");
+  check("今日沉浸 18 分鐘", $(".goal-figure-value")?.textContent.trim() === "18", $(".goal-figure-value")?.textContent);
+  check("大數字 60px", getComputedStyle($(".goal-figure-value")).fontSize === "60px");
+  check("有今日剩餘倒數", /\d{2}:\d{2}:\d{2}/.test($("#countdown")?.textContent || ""));
+  check("進度條有跑光動畫", getComputedStyle($(".progress-fill")).animationName.includes("flowstudy-shimmer"));
+  check("摘要卡是「今日新單字」不是「總詞彙量」", txt().includes("今日新單字") && !txt().includes("總詞彙量"));
+  const todayNewEl = () => $$(".summary-value-num").map(e => e.textContent.trim());
+  check("今日新單字 = 5", todayNewEl().includes("5"), todayNewEl().join("/"));
+  check("顯示累積收藏", txt().includes("累積收藏"));
+
+  section("   學習成效長條圖（固定基準 30）");
+  check("7 天", $$(".bar-col").length === 7, $$(".bar-col").length);
+  check("每天兩根柱子（分鐘 + 新單字）", $$(".bar-col")[0].querySelectorAll(".bar").length === 2);
+  check("新單字綠柱回來了", !!$(".bar-words"));
+  check("左側 Y 軸刻度已移除", !$(".bar-axis"));
+  check("藍柱用專屬的圖表色（不是 --primary）",
+    getComputedStyle($(".bar-minutes")).backgroundColor !== getComputedStyle($(".progress-fill")).backgroundColor,
+    `bar=${getComputedStyle($(".bar-minutes")).backgroundColor} / progress=${getComputedStyle($(".progress-fill")).backgroundColor}`);
+  check("綠柱與藍柱顏色不同",
+    getComputedStyle($(".bar-words")).backgroundColor !== getComputedStyle($(".bar-minutes")).backgroundColor);
+
+  section("   數值改用 hover 提示框");
+  check("柱子上不再直接標數字", !$(".bar-value"));
+  {
+    const col = $$(".bar-col")[$$(".bar-col").length - 1];
+    col.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    await settle(120);
+    const tip = $("#chartTooltip");
+    check("滑上去會出現提示框", tip && !tip.hidden);
+    const tipText = (tip?.textContent || "").replace(/\s+/g, " ");
+    check("提示框有星期", /週[一二三四五六日]/.test(tipText), tipText);
+    check("提示框有『總沉浸時間: XX min』", /總沉浸時間: 18 min/.test(tipText), tipText);
+    check("提示框有『新單詞: XX』", /新單詞: \d+/.test(tipText), tipText);
+    check("提示框是白底", getComputedStyle(tip).backgroundColor === "rgb(255, 255, 255)",
+      getComputedStyle(tip).backgroundColor);
+    // 強制置頂：切到柱子高度差很多的兩天，提示框的 top 不可以跟著變
+    const topA = getComputedStyle(tip).top;
+    const tallCol = $$(".bar-col").find(c => parseFloat(c.querySelector(".bar-minutes").style.height) > 90);
+    if (tallCol) {
+      tallCol.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      await settle(100);
+      check("★ 提示框垂直位置固定，不隨柱高浮動", getComputedStyle(tip).top === topA,
+        `${topA} → ${getComputedStyle(tip).top}`);
+    }
+    check("★ 提示框整個在柱子區域之上（不壓到任何柱子）",
+      tip.getBoundingClientRect().bottom <= $(".bar-chart").getBoundingClientRect().top,
+      `提示框底 ${Math.round(tip.getBoundingClientRect().bottom)} vs 柱區頂 ${Math.round($(".bar-chart").getBoundingClientRect().top)}`);
+    check("★ 連攻頂 100% 的柱子也不會被蓋到", (() => {
+      const tallest = $$(".bar-minutes").reduce((a, b) =>
+        a.getBoundingClientRect().top < b.getBoundingClientRect().top ? a : b);
+      return tip.getBoundingClientRect().bottom <= tallest.getBoundingClientRect().top;
+    })());
+    check("提示框往上溢出到卡片外（這是刻意的）",
+      tip.getBoundingClientRect().top < $(".chart-card").getBoundingClientRect().top,
+      `提示框頂 ${Math.round(tip.getBoundingClientRect().top)} vs 卡片頂 ${Math.round($(".chart-card").getBoundingClientRect().top)}`);
+    check("圖表卡片不裁切溢出內容", getComputedStyle($(".chart-card")).overflow === "visible",
+      getComputedStyle($(".chart-card")).overflow);
+    $("#barCols").dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+    await settle(80);
+    check("移開後提示框消失", $("#chartTooltip").hidden);
+  }
+
+  // 等比例刻度（下限 30）：種子資料裡前天有 50 分鐘，所以攻頂值 = 50
+  // → 今天 18 分鐘應該是 18/50 = 36%，50 分鐘那天才是 100%
+  section("   等比例刻度（下限 30）");
+  {
+    const cols = $$(".bar-col");
+    const h = (col) => parseFloat(col.querySelector(".bar-minutes").style.height) || 0;
+    const mins = (col) => Number(col.dataset.minutes);
+
+    const todayCol = cols[cols.length - 1];
+    const maxCol = cols.reduce((a, b) => (mins(a) >= mins(b) ? a : b));
+    const scale = Math.max(30, ...cols.map(mins));
+
+    check("本週最大值 50 分鐘 → 攻頂 100%", Math.abs(h(maxCol) - 100) < 0.5,
+      `${mins(maxCol)} 分 → ${h(maxCol)}%`);
+    check("★ 今天 18 分鐘 = 18/50 = 36%（依最大值等比例縮放）",
+      Math.abs(h(todayCol) - (18 / scale) * 100) < 0.5, `${mins(todayCol)} 分 → ${h(todayCol)}%`);
+    check("★ 不是用固定 30 當基準（否則 18 分會是 60%）", Math.abs(h(todayCol) - 60) > 1, h(todayCol) + "%");
+    check("每根柱子的高度都與數值成正比", cols.every(c => {
+      const expect = mins(c) > 0 ? Math.max(4, (mins(c) / scale) * 100) : 0;
+      return Math.abs(h(c) - expect) < 0.5;
+    }));
+    check("★ 沒有任何柱子被截斷（不再需要破表符號）", !$(".bar.is-over"));
+    check("柱子上沒有遮罩切口", (() => {
+      const b = $$(".bar").find(x => parseFloat(x.style.height) > 0);
+      const cs = b && getComputedStyle(b);
+      return !b || cs.maskImage === "none" || !cs.maskImage;
+    })(), getComputedStyle($$(".bar").find(x => parseFloat(x.style.height) > 0)).maskImage);
+  }
+
+  section("   沉浸習慣方格圖");
+  check("最左邊 7 個星期標籤", $$(".heatmap-row-label").length === 7);
+  check("上方 5 個日期標籤", $$(".heatmap-col-label").length === 5, $$(".heatmap-col-label").length);
+  {
+    const cell = $$(".heatmap-cell").find(c => !c.classList.contains("is-empty") && c.dataset.minutes > 0);
+    // :hover 沒辦法用 JS 觸發，改成直接檢查 CSS 規則存在且有畫外圈。
+    // 值是 var(--ring-color)，所以不能比對 rgb，要比對變數名。
+    check("方格有 hover 外圈光暈樣式", (() => {
+      const rules = [...document.styleSheets].flatMap(s => { try { return [...s.cssRules]; } catch { return []; } });
+      const rule = rules.find(r => r.selectorText && r.selectorText.includes(".heatmap-cell") &&
+        r.selectorText.includes(":hover"));
+      return !!rule && (rule.style.boxShadow || "").includes("--ring-color");
+    })(), (() => {
+      const rules = [...document.styleSheets].flatMap(s => { try { return [...s.cssRules]; } catch { return []; } });
+      const rule = rules.find(r => r.selectorText && r.selectorText.includes(".heatmap-cell") && r.selectorText.includes(":hover"));
+      return rule ? rule.style.boxShadow : "找不到 :hover 規則";
+    })());
+    check("外圈顏色是深灰（slate-400）",
+      getComputedStyle(document.documentElement).getPropertyValue("--ring-color").trim() === "#94a3b8",
+      getComputedStyle(document.documentElement).getPropertyValue("--ring-color"));
+    cell.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    await settle(120);
+    const tip = $("#heatTooltip");
+    check("滑上方格會出現提示框", tip && !tip.hidden);
+    const tipText = (tip?.textContent || "").replace(/\s+/g, " ").trim();
+    check("★ 提示框不再顯示日期", !/\d+月\d+日/.test(tipText), tipText);
+    check("★ 格式是「英文星期簡寫, Week N」", /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), Week \d+/.test(tipText), tipText);
+    check("有顯示時數", /(min|hour)/.test(tipText), tipText);
+
+    // 最上排（週一）的方格：提示框必須浮在它正上方，即使溢出卡片也一樣
+    {
+      const topCell = $$(".heatmap-cell").find(c =>
+        !c.classList.contains("is-empty") && c.dataset.dow === "0" && Number(c.dataset.minutes) > 0);
+      check("有最上排的方格可測", !!topCell);
+      if (topCell) {
+        topCell.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+        await settle(120);
+        const tipRect = tip.getBoundingClientRect();
+        const cellRect = topCell.getBoundingClientRect();
+        check("★ 最上排的提示框在方格正上方",
+          tipRect.bottom <= cellRect.top + 1, `tip.bottom=${Math.round(tipRect.bottom)} cell.top=${Math.round(cellRect.top)}`);
+        check("★ 水平置中對齊方格",
+          Math.abs((tipRect.left + tipRect.width/2) - (cellRect.left + cellRect.width/2)) < 3,
+          `tip中心=${Math.round(tipRect.left+tipRect.width/2)} cell中心=${Math.round(cellRect.left+cellRect.width/2)}`);
+      }
+    }
+    check("★ 提示框不在捲動容器內（否則會被裁掉）",
+      !$(".heatmap-scroll").contains($("#heatTooltip")));
+    check("方格卡片不裁切溢出內容", getComputedStyle($(".heatmap-card")).overflow === "visible",
+      getComputedStyle($(".heatmap-card")).overflow);
+
+    $(".heatmap-scroll").dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+    await settle(80);
+    check("移開後提示框消失", $("#heatTooltip").hidden);
+  }
+
+  section("   底部留白（可把最後一塊捲到畫面中央）");
+  check("有底部留白區塊", !!$(".home-bottom-spacer"));
+  check("留白高度夠（≥ 視窗的 30%）",
+    $(".home-bottom-spacer").getBoundingClientRect().height >= window.innerHeight * 0.3,
+    Math.round($(".home-bottom-spacer").getBoundingClientRect().height) + "px / 視窗 " + window.innerHeight);
+  const { immersionLevelForMinutes: lvl } = await import("./core/analytics/analytics.js");
+  for (const [m, want] of [[0,0],[4,0],[5,1],[14,1],[15,2],[29,2],[30,3],[59,3],[60,4],[180,4]]) {
+    check(`${m} 分鐘 → 第 ${want+1} 級`, lvl(m) === want, `得到第 ${lvl(m)+1} 級`);
+  }
+
+  section("3. 記憶固化：影片清單");
+  $('[data-view="memory"]').click();
+  await settle(600);
+  check("有日期大標題", $$(".mem-day-heading").length >= 1, $$(".mem-day-heading").map(e=>e.textContent).join("/"));
+  check("標題是「今天 M月D日」格式", /^今天 \d+月\d+日$/.test($(".mem-day-heading").textContent.trim()),
+    $(".mem-day-heading")?.textContent);
+  check("列出 2 部影片", $$(".mem-video-card").length === 2, $$(".mem-video-card").length);
+  check("有 YouTube 縮圖", ($(".mem-thumb img")?.src || "").includes("i.ytimg.com/vi/VID"));
+  check("顯示影片標題", txt().includes("影片 A"));
+  check("卡片顯示單字數量", txt().includes("3 個單字"), txt().slice(0, 120));
+  check("不再顯示「生單字 / 學會了」的分類", !txt().includes("生單字") && !txt().includes("學會了"));
+
+  section("4. 點影片直接進複習（沒有中間的單字清單層）");
+  $$(".mem-video-card").find(c => c.textContent.includes("影片 A")).click();
+  await settle(450);
+  check("直接顯示複習卡片", !!$(".mem-card") && !!$(".mem-term"), $(".mem-term")?.textContent.trim());
+  check("沒有單字總覽列表", !$(".mem-word-grid") && !$(".mem-word-chip"));
+  check("沒有頁籤", !$(".mem-tab"));
+  check("沒有主動回憶開關", !txt().includes("主動回憶") && !$("#activeRecallToggle"));
+
+  section("   卡片內容");
+  const firstTerm = $(".mem-term").textContent.trim();
+  check("右上角有進度 1 / 3", ($(".mem-progress-label")?.textContent||"").replace(/\s/g,"") === "1/3",
+    $(".mem-progress-label")?.textContent);
+  check("左上角有影片時間戳", /^\d+:\d{2}:\d{2}$/.test($(".mem-timestamp")?.textContent.trim()||""),
+    $(".mem-timestamp")?.textContent);
+  check("時間戳可點回影片", ($(".mem-source")?.href||"").includes("watch?v=VIDA&t="),
+    $(".mem-source")?.getAttribute("href"));
+  check("有單字發音鍵", !!$("#memSpeakWord"));
+  check("有例句", !!$(".mem-sentence"), $(".mem-sentence")?.textContent);
+  // 「完整句子」的保證來自句子時間軸（sentence-timeline.js 有 54 項測試），
+  // 不能用「有沒有句號」判斷——YouTube 自動字幕整軌都沒有標點。
+  // 這裡要驗的是：顯示出來的就是當初存下的整句，沒有在畫面上被截斷。
+  {
+    const O = await import("./core/storage/occurrenceStore.js");
+    const all = await O.getAllOccurrences();
+    const stored = all.find((o) => o.videoId === "VIDA" && o.sentence.includes(firstTerm));
+    const shown = $(".mem-sentence").textContent.trim();
+    check("顯示的例句 = 當初存下的完整句子（沒被截斷）",
+      stored && shown === stored.sentence.trim(), `畫面：${shown}\n      儲存：${stored && stored.sentence}`);
+    check("例句不只是一個片段（字數合理）", shown.split(/\s+/).length >= 4, shown.split(/\s+/).length + " 字");
+  }
+  check("例句裡的單字有標色", !!$(".mem-mark"), $(".mem-mark")?.textContent);
+  check("有例句發音鍵", !!$("#memSpeakSentence"));
+  check("沒有展開前後句的下拉鍵", !$(".mem-context-toggle"));
+  check("沒有編輯翻譯的鉛筆鍵", !$(".mem-edit"));
+  check("有垃圾桶刪除鍵", !!$("#memDelete"));
+
+  section("   點單字才顯示翻譯");
+  check("翻譯預設隱藏", !$(".mem-translation") && !!$("#memReveal"));
+  $("#memTerm").click();
+  await settle(300);
+  check("點英文單字後浮現中文翻譯", !!$(".mem-translation"), $(".mem-translation")?.textContent);
+  check("★ 顯示的是真正的翻譯，不是「沒有儲存翻譯」",
+    !($(".mem-translation")?.textContent || "").includes("沒有儲存翻譯"),
+    $(".mem-translation")?.textContent);
+  check("同時顯示例句中文欄位", !!$("#memSentenceZh"));
+
+  section("5. 單一「下一個」按鈕，單向前進");
+  check("只有一顆按鈕", $$(".mem-actions button").length === 1, $$(".mem-actions button").length);
+  check("按鈕文字是「下一個」", $("#memNext").textContent.trim() === "下一個", $("#memNext")?.textContent.trim());
+  check("沒有「再來一次 / 記住了」", !txt().includes("再來一次") && !txt().includes("記住了"));
+
+  $("#memNext").click();
+  await settle(300);
+  check("換到下一個字", $(".mem-term").textContent.trim() !== firstTerm, $(".mem-term")?.textContent);
+  check("新的字翻譯重新隱藏", !$(".mem-translation") && !!$("#memReveal"));
+  check("進度變成 2 / 3", ($(".mem-progress-label")?.textContent||"").replace(/\s/g,"") === "2/3",
+    $(".mem-progress-label")?.textContent);
+
+  $("#memNext").click();
+  await settle(300);
+  check("最後一張按鈕變成「完成這一輪」", $("#memNext").textContent.trim() === "完成這一輪",
+    $("#memNext")?.textContent.trim());
+
+  $("#memNext").click();
+  await settle(400);
+  check("★ 走完自動回到影片清單", !!$(".mem-video-card") && !$(".mem-term"), txt().slice(0, 60));
+
+  section("6. 複習不會改動任何資料");
+  const afterAll = await V.getAllWords();
+  check("單字數量沒有變", afterAll.length === 5, afterAll.length);
+  check("沒有任何字被標記為 mastered", afterAll.every(w => !w.mastered),
+    afterAll.filter(w => w.mastered).map(w => w.term).join(","));
+  const todayNewAfter = afterAll.filter(w => {
+    const d = new Date(w.createdAt); const s = new Date(); s.setHours(0,0,0,0); return d >= s;
+  }).length;
+  check("★ 今日新單字仍然是 5", todayNewAfter === 5, todayNewAfter);
+
+  $('[data-view="home"]').click();
+  await settle(600);
+  check("★ 首頁「今日新單字」仍然是 5", $$(".summary-value-num").map(e=>e.textContent.trim()).includes("5"),
+    $$(".summary-value-num").map(e=>e.textContent.trim()).join("/"));
+  check("顯示累積收藏 5 詞", txt().includes("累積收藏"), txt().match(/累積收藏 \d+ 詞/)?.[0]);
+
+  section("7. 另一部影片只考自己的字");
+  $('[data-view="memory"]').click();
+  await settle(600);
+  $$(".mem-video-card").find(c => c.textContent.includes("影片 B")).click();
+  await settle(450);
+  check("進度是 1 / 2", ($(".mem-progress-label")?.textContent||"").replace(/\s/g,"") === "1/2",
+    $(".mem-progress-label")?.textContent);
+  check("沒有混入影片 A 的字", !txt().includes("advantage") && !txt().includes("fluent"));
+
+  section("8. 垃圾桶刪除（存錯的字）");
+  {
+    const doomed = $(".mem-term").textContent.trim();
+    const before = (await V.getAllWords()).length;
+    globalThis.confirm = () => true; // 略過確認對話框
+    $("#memDelete").click();
+    await settle(500);
+
+    const after = await V.getAllWords();
+    check("單字真的被刪除", after.length === before - 1, `${before} → ${after.length}`);
+    check("被刪的是對的那一個", !after.some(w => w.term === doomed), doomed);
+    check("進度更新為 1 / 1", ($(".mem-progress-label")?.textContent||"").replace(/\s/g,"") === "1/1",
+      $(".mem-progress-label")?.textContent);
+
+    $('[data-view="home"]').click();
+    await settle(600);
+    check("★ 刪除後首頁「今日新單字」降為 4",
+      $$(".summary-value-num").map(e => e.textContent.trim()).includes("4"),
+      $$(".summary-value-num").map(e => e.textContent.trim()).join("/"));
+    check("累積收藏也跟著降為 4", txt().includes("累積收藏 4 詞"), txt().match(/累積收藏 \d+ 詞/)?.[0]);
+  }
+
+  section("9. 刪光一部影片的字，該影片從清單消失");
+  {
+    globalThis.confirm = () => true;
+    $('[data-view="memory"]').click();
+    await settle(600);
+    const cardsBefore = $$(".mem-video-card").length;
+    $$(".mem-video-card").find(c => c.textContent.includes("影片 B")).click();
+    await settle(450);
+    $("#memDelete").click();          // 影片 B 只剩最後一個字
+    await settle(500);
+    check("刪完最後一個字會自動回影片清單", !!$(".mem-video-card") && !$(".mem-term"));
+    check("該影片從清單消失", $$(".mem-video-card").length === cardsBefore - 1,
+      `${cardsBefore} → ${$$(".mem-video-card").length}`);
+  }
+
+  section("8. 設定");
+  $('[data-view="settings"]').click();
+  await settle(400);
+  const slider = $("#goalSlider");
+  check("每日沉浸目標滑桿 5–120 / 每 5 分鐘",
+    slider && slider.min === "5" && slider.max === "120" && slider.step === "5",
+    slider && `${slider.min}-${slider.max} step ${slider.step}`);
+  check("讀回已存的 25 分鐘", slider.value === "25", slider.value);
+  slider.value = "45"; slider.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle(200);
+  check("放開後寫入儲存", mem.flowstudySettings?.dailyGoalMinutes === 45);
+  check("有淺色/深色切換", $$(".theme-btn").length === 2);
+  check("沒有訂閱 / 語言偏好 / 刪除帳戶",
+    !txt().includes("訂閱") && !txt().includes("語言偏好") && !txt().includes("刪除帳戶"));
+
+  section("9. 沉浸時數維護");
+  {
+    const IM  = await import("./core/storage/immersionStore.js");
+    const MIG = await import("./core/storage/migrate.js");
+    const { toLocalDateKey } = await import("./core/models.js");
+
+    // ---- 從 zeroStudy 帶入的既有時數 ----
+    const imported = await MIG.importLegacyHoursIfNeeded();
+    check("首次啟動會帶入既有時數", imported.skipped === false, JSON.stringify(imported));
+    const legacy = await IM.getLegacySession();
+    check("★ 帶入的是 10 小時 4 分（不是 10 小時整）",
+      legacy && legacy.watchedSeconds === 10 * 3600 + 4 * 60, legacy && legacy.watchedSeconds);
+    check("再跑一次不會重複加", (await MIG.importLegacyHoursIfNeeded()).skipped === true);
+    check("★ 帶入的日期排在所有真實紀錄之前（才不會在 7 天長條圖裡冒出柱子）",
+      legacy.startedAt < (await IM.getAllSessions())
+        .filter(s => s.source !== IM.LEGACY_SOURCE)
+        .reduce((a, s) => a < s.startedAt ? a : s.startedAt, "9999"),
+      legacy.startedAt);
+
+    // ---- 一筆離譜的紀錄（模擬影片整夜沒關）----
+    // 刻意放在 10 天前，落在 7 天長條圖視窗之外，才不會影響前面的等比例測試
+    const bogusDay = new Date(); bogusDay.setDate(bogusDay.getDate() - 10); bogusDay.setHours(3, 0, 0, 0);
+    const bogusKey = toLocalDateKey(bogusDay);
+    const bogus = createImmersionSession({ videoId: "VIDA", videoTitle: "影片 A", startedAt: bogusDay.toISOString() });
+    bogus.watchedSeconds = 20 * 3600; bogus.endedAt = bogusDay.toISOString();
+    await put(STORES.IMMERSION_SESSIONS, bogus);
+
+    // 重新進設定頁，讓維護區塊看到新資料
+    $('[data-view="home"]').click(); await settle(300);
+    $('[data-view="settings"]').click(); await settle(600);
+
+    const box = $("#dataMaintenance");
+    check("設定頁有沉浸時數維護區塊", !!box);
+    check("顯示目前總沉浸時數", /\d+ 小時 \d+ 分/.test(box.querySelector(".data-value")?.textContent || ""),
+      box.querySelector(".data-value")?.textContent);
+
+    check("帶入時數可直接編輯：小時欄 = 10", $("#legacyH")?.value === "10", $("#legacyH")?.value);
+    check("帶入時數可直接編輯：分鐘欄 = 4", $("#legacyM")?.value === "4", $("#legacyM")?.value);
+
+    check("★ 列出異常的那一天", !!box.querySelector(`[data-delete-date="${bogusKey}"]`), bogusKey);
+    check("異常那天顯示 20 小時", box.textContent.includes("20 小時 0 分"),
+      box.textContent.match(/\d+ 小時 \d+ 分/g)?.join(" / "));
+    check("正常的 50 分鐘那天不會被誤判為異常",
+      $$("[data-delete-date]").length === 1, $$("[data-delete-date]").map(b => b.dataset.deleteDate).join(","));
+
+    // ---- CSS 真的存在（不然維護區塊會是一片裸樣式）----
+    check("維護區塊的樣式有套用：按鈕不是瀏覽器預設外觀",
+      getComputedStyle($(".data-btn-primary")).borderRadius === "8px",
+      getComputedStyle($(".data-btn-primary")).borderRadius);
+    check("數字輸入框有固定寬度", getComputedStyle($("#legacyH")).width === "74px",
+      getComputedStyle($("#legacyH")).width);
+
+    // ---- 刪除異常紀錄 ----
+    const beforeTotal = await IM.getTotalSeconds();
+    globalThis.confirm = () => true;
+    box.querySelector(`[data-delete-date="${bogusKey}"]`).click();
+    await settle(600);
+    const afterTotal = await IM.getTotalSeconds();
+    check("★ 刪除後總時數正好少了 20 小時", beforeTotal - afterTotal === 20 * 3600,
+      `${beforeTotal} → ${afterTotal}`);
+    check("刪除後該列從清單消失", !$(`[data-delete-date="${bogusKey}"]`));
+    check("沒有異常紀錄時顯示提示文字", $("#dataMaintenance").textContent.includes("沒有發現異常"));
+
+    // ---- 手動改寫帶入的時數 ----
+    $("#legacyH").value = "12"; $("#legacyM").value = "30";
+    $("#saveLegacy").click();
+    await settle(600);
+    const after = await IM.getLegacySession();
+    check("★ 儲存後帶入時數變成 12 小時 30 分", after.watchedSeconds === 12 * 3600 + 30 * 60,
+      after.watchedSeconds);
+    check("改的是同一筆紀錄，不是又新增一筆",
+      (await IM.getAllSessions()).filter(s => s.source === IM.LEGACY_SOURCE).length === 1);
+    check("畫面上的輸入框跟著更新", $("#legacyH").value === "12" && $("#legacyM").value === "30",
+      `${$("#legacyH").value}:${$("#legacyM").value}`);
+
+    // ---- 總時數與長條圖同源：刪掉今天的紀錄，首頁必須跟著變 ----
+    const todaySessions = (await IM.getDailyBreakdown()).find(d => d.date === toLocalDateKey(new Date()));
+    check("今天有 18 分鐘的紀錄", todaySessions && todaySessions.seconds === 18 * 60,
+      todaySessions && todaySessions.seconds);
+  }
+
+  paint();
+})().catch(e => { lines.push("\n例外：" + (e && e.stack || e)); paint(); });
+</script>
+</body>
+</html>

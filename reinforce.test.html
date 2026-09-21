@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>FlowStudy 記憶強化頁測試</title>
+<link rel="stylesheet" href="review.css" />
+<style>
+ body{margin:24px;background:var(--bg)}
+ pre{background:var(--card-bg);border:1px solid var(--card-border);padding:16px;border-radius:8px;
+     white-space:pre-wrap;line-height:1.55;font-size:13px;color:var(--text-primary)}
+ #stage{max-width:760px;margin-top:20px}
+</style>
+</head>
+<body>
+<h1 style="color:var(--text-primary);font-size:18px">FlowStudy 記憶強化頁測試</h1>
+<p style="color:var(--text-secondary);font-size:13px">
+  用真實 IndexedDB 把整頁跑起來，模擬使用者按「顯示答案 → 記得了」的完整流程。
+  <b>需要用本機伺服器開啟</b>。下方 #stage 是實際渲染出來的頁面。
+</p>
+<pre id="out">執行中…</pre>
+<div id="stage"></div>
+
+<script type="module">
+const lines = [];
+let pass = 0, fail = 0;
+const check = (n, c, d) => {
+  if (c) { pass++; lines.push("  ✓ " + n); }
+  else { fail++; lines.push("  ✗ " + n + (d !== undefined ? "\n      → " + d : "")); }
+};
+const section = (t) => lines.push("\n" + t);
+const render = () => {
+  lines.push("\n" + "=".repeat(52));
+  lines.push(`通過 ${pass} 項，失敗 ${fail} 項`);
+  lines.push("=".repeat(52));
+  document.getElementById("out").textContent = lines.join("\n");
+  document.title = fail === 0 ? "ALL PASS" : ("FAIL " + fail);
+};
+
+const mem = {};
+globalThis.chrome = {
+  storage: {
+    local: {
+      get(keys, cb) {
+        let o = {};
+        if (keys == null) o = { ...mem };
+        else if (typeof keys === "string") { if (mem[keys] !== undefined) o[keys] = mem[keys]; }
+        else if (Array.isArray(keys)) keys.forEach(k => { if (mem[k] !== undefined) o[k] = mem[k]; });
+        if (cb) cb(o);
+        return Promise.resolve(o);
+      },
+      set(o, cb) { Object.assign(mem, o); if (cb) cb(); return Promise.resolve(); },
+      remove(k, cb) { (Array.isArray(k)?k:[k]).forEach(x => delete mem[x]); if (cb) cb(); return Promise.resolve(); },
+    },
+    onChanged: { addListener(){}, removeListener(){} },
+  },
+  runtime: { lastError: null, sendMessage(msg, cb) { if (cb) cb({ }); } },
+};
+
+const $ = (sel) => document.querySelector("#stage " + sel);
+const click = (sel) => { const el = $(sel); if (el) el.click(); return !!el; };
+const settle = (ms = 220) => new Promise(r => setTimeout(r, ms));
+
+async function run() {
+  await new Promise(r => { const q = indexedDB.deleteDatabase("flowstudy"); q.onsuccess=q.onerror=q.onblocked=()=>r(); });
+
+  const V = await import("./core/storage/vocabularyStore.js");
+  const R = await import("./core/storage/reviewStore.js");
+  const S = await import("./core/storage/settingsStore.js");
+  const page = await import("./pages/reinforcePage.js");
+  const stage = document.getElementById("stage");
+
+  // ---------- 空狀態 ----------
+  section("1. 完全沒有單字時");
+  await page.renderReinforcePage(stage);
+  await settle();
+  check("不會崩潰，顯示引導訊息", !!$(".reinforce-empty"));
+  check("訊息是『還沒有收藏任何單字』", (stage.textContent || "").includes("還沒有收藏任何單字"));
+  check("沒有評分按鈕", !$("#goodBtn") && !$("#againBtn"));
+
+  // ---------- 建立測試資料 ----------
+  await V.saveWordFromSubtitle({
+    term: "run", translation: "跑；經營",
+    videoId: "VID1", videoTitle: "測試影片 A",
+    sentence: "I need to run every morning.", startTime: 42.5, endTime: 45.1,
+  });
+  await V.saveWordFromSubtitle({
+    term: "advantage", translation: "優勢",
+    videoId: "VID2", videoTitle: "測試影片 B",
+    sentence: "That gives you an unfair advantage.", startTime: 12, endTime: 15,
+  });
+  await S.saveSettings({ activeRecallDefault: true });
+
+  // ---------- 主動回想 ----------
+  section("2. 主動回想（Active Recall）");
+  await page.renderReinforcePage(stage);
+  await settle();
+
+  check("顯示了單字", !!$(".reinforce-term"), $(".reinforce-term")?.textContent);
+  const shownTerm = $(".reinforce-term").textContent.trim();
+  check("狀態標籤是『新單字』", ($(".reinforce-state")?.textContent || "").includes("新單字"));
+  check("答案一開始是隱藏的", !!$(".reinforce-hidden-answer") && !$(".reinforce-answer"));
+  check("翻譯沒有提前洩漏", !(stage.textContent || "").includes("跑；經營") || shownTerm !== "run");
+  check("有『顯示答案』按鈕", !!$("#revealBtn"));
+  check("未揭曉時沒有評分按鈕", !$("#goodBtn"));
+
+  click("#revealBtn");
+  await settle(80);
+  check("揭曉後顯示答案區", !!$(".reinforce-answer"));
+  check("揭曉後出現評分按鈕", !!$("#goodBtn") && !!$("#againBtn"));
+  check("顯示了原始句子", !!$(".reinforce-sentence"));
+  check("句子裡的目標單字有被標出來", !!$(".reinforce-highlight"),
+        $(".reinforce-highlight")?.textContent);
+  check("顯示來源影片", (stage.textContent || "").includes("測試影片"));
+  check("有可跳回影片時間點的連結", !!$(".reinforce-jump") &&
+        $(".reinforce-jump").href.includes("t=") && $(".reinforce-jump").href.includes("watch?v="),
+        $(".reinforce-jump")?.href);
+  check("按鈕上顯示下次複習時間預覽", ($(".reinforce-btn-sub")?.textContent || "").length > 0,
+        $(".reinforce-btn-sub")?.textContent);
+
+  // ---------- 評分 ----------
+  section("3. 按下「記得了」");
+  const before = await V.findWordByTerm(shownTerm);
+  click("#goodBtn");
+  await settle(400);
+
+  const after = await V.findWordByTerm(shownTerm);
+  check("單字狀態改變", after.state !== before.state, `${before.state} → ${after.state}`);
+  check("dueAt 往後排了", after.dueAt !== before.dueAt);
+  check("reviewCount +1", after.reviewCount === before.reviewCount + 1);
+  const events = await R.getReviewEventsForWord(after.id);
+  check("建立了 ReviewEvent", events.length === 1);
+  check("事件記錄了正確的評分", events[0] && events[0].rating === "good");
+  check("事件記錄了前後狀態",
+        events[0] && events[0].previousState === "new" && events[0].newState === "learning",
+        events[0] && `${events[0].previousState} → ${events[0].newState}`);
+  check("自動跳到下一張卡片", $(".reinforce-term")?.textContent.trim() !== shownTerm,
+        $(".reinforce-term")?.textContent);
+  check("新卡片的答案重新隱藏起來", !!$(".reinforce-hidden-answer"));
+  check("今日已複習數字有更新", (stage.textContent || "").includes("1"));
+
+  // ---------- 答錯要回到佇列 ----------
+  section("4. 按下「再一次」");
+  click("#revealBtn");
+  await settle(80);
+  const secondTerm = $(".reinforce-term").textContent.trim();
+  click("#againBtn");
+  await settle(400);
+  const againEvents = await R.getAllReviewEvents();
+  check("再一次也會建立 ReviewEvent", againEvents.length === 2, againEvents.length);
+  check("有一筆評分是 again", againEvents.some(e => e.rating === "again"));
+  check("答錯的卡片回到這一輪佇列裡再練一次",
+        $(".reinforce-term")?.textContent.trim() === secondTerm,
+        `目前顯示：${$(".reinforce-term")?.textContent}，預期：${secondTerm}`);
+
+  // ---------- 連點防護 ----------
+  section("5. 連續快速點擊");
+  click("#revealBtn");
+  await settle(80);
+  const eventsBeforeSpam = (await R.getAllReviewEvents()).length;
+  const goodBtn = $("#goodBtn");
+  goodBtn.click(); goodBtn.click(); goodBtn.click(); // 同一顆按鈕連點三次
+  await settle(500);
+  const eventsAfterSpam = (await R.getAllReviewEvents()).length;
+  check("連點三次只會產生一筆複習事件",
+        eventsAfterSpam === eventsBeforeSpam + 1, `${eventsBeforeSpam} → ${eventsAfterSpam}`);
+
+  // ---------- 關閉主動回想 ----------
+  section("6. 關閉主動回想");
+  await V.saveWordFromSubtitle({ term: "flow", translation: "流動", videoId: "VID3",
+                                 sentence: "Let it flow.", startTime: 5 });
+  await page.renderReinforcePage(stage);
+  await settle();
+  const toggle = $("#activeRecallToggle");
+  check("有主動回想開關", !!toggle);
+  if (toggle && toggle.checked) { toggle.click(); await settle(200); }
+  check("關閉後直接顯示答案，不需要按揭曉", !!$(".reinforce-answer") && !$("#revealBtn"));
+  check("關閉後直接出現評分按鈕", !!$("#goodBtn"));
+  check("設定有被記住", mem.flowstudySettings && mem.flowstudySettings.activeRecallDefault === false,
+        JSON.stringify(mem.flowstudySettings && mem.flowstudySettings.activeRecallDefault));
+
+  // ---------- 複習中單字被刪除 ----------
+  section("7. 複習進行中，單字在別的分頁被刪掉");
+  const victim = await V.findWordByTerm($(".reinforce-term").textContent.trim());
+  await V.deleteWord(victim.id);
+  click("#goodBtn");
+  await settle(400);
+  check("不會崩潰", !!document.querySelector("#stage"));
+  check("沒有為已刪除的單字補寫複習事件",
+        (await R.getReviewEventsForWord(victim.id)).length === 0);
+  check("畫面仍然可用（顯示下一張或完成狀態）",
+        !!$(".reinforce-card") || !!$(".reinforce-empty"));
+
+  // ---------- 全部複習完 ----------
+  section("8. 這一輪複習完畢");
+  let guard = 0;
+  while ($("#goodBtn") || $("#revealBtn")) {
+    if ($("#revealBtn")) click("#revealBtn"); else click("#goodBtn");
+    await settle(320);
+    if (++guard > 40) break;
+  }
+  check("最後會出現完成狀態", !!$(".reinforce-empty"), stage.textContent.slice(0, 80));
+  check("沒有殘留的評分按鈕", !$("#goodBtn") && !$("#againBtn"));
+
+  // ---------- 重新整理後進度不會消失 ----------
+  section("9. 重新整理後進度保留");
+  const totalEvents = (await R.getAllReviewEvents()).length;
+  await page.renderReinforcePage(stage);
+  await settle();
+  const afterReload = (await R.getAllReviewEvents()).length;
+  check("複習紀錄仍然存在", afterReload === totalEvents, `${totalEvents} → ${afterReload}`);
+  check("已複習過的卡片不會馬上跑回來重做", !$("#revealBtn") || !!$(".reinforce-empty"));
+  check("保留率有算出來（從實際事件推導）",
+        /\d+%/.test(stage.textContent) || stage.textContent.includes("—"));
+
+  render();
+}
+
+run().catch(err => { lines.push("\n執行時發生例外：" + (err && err.stack || err)); render(); });
+</script>
+</body>
+</html>
