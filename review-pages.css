@@ -1,0 +1,309 @@
+/* ============================================================================
+   記憶固化頁（影片清單 → 複習卡片）
+   ----------------------------------------------------------------------------
+   review.css 放的是整個面板共用的骨架與設計 token；
+   這一份放個別頁面的樣式，兩者分開才不會愈長愈難找。
+   ============================================================================ */
+
+/* ---------- L1：影片清單（依日期分組） ---------- */
+
+.mem-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+/* 日期大標題，分隔不同天收藏的影片，跟 YouTube 觀看紀錄一樣的節奏 */
+.mem-day-heading {
+  margin: 0 0 14px;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-strong);
+}
+.mem-video-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mem-video-card {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  background: var(--card-bg);
+  box-shadow: var(--card-shadow);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.mem-video-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--primary-border);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.1);
+}
+.mem-thumb {
+  flex-shrink: 0;
+  width: 168px;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--hairline);
+}
+.mem-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.mem-video-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+}
+.mem-video-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--text-primary);
+  /* 標題最多兩行，太長的影片名不會把卡片撐得比縮圖還高 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mem-video-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.mem-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--primary-bg);
+  color: var(--primary-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .mem-thumb {
+    width: 120px;
+  }
+}
+
+/* ---------- L2：複習卡片 ---------- */
+
+.mem-card {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* 頂列：左邊是影片來源與時間點（可點回影片），右邊是進度 */
+.mem-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+.mem-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 13px;
+}
+.mem-source:hover {
+  color: var(--text-primary);
+}
+.mem-source svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.mem-source-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mem-timestamp {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--hairline);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.mem-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.mem-progress-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+/* 垃圾桶預設低調，滑上去才轉紅——這是破壞性動作，不該一直搶注意力 */
+.mem-delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.mem-card-body {
+  padding: 36px 24px 8px;
+  text-align: center;
+}
+
+.mem-term-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+/* 單字本身就是揭曉按鈕：想不出來直接點它，不用再去找別的地方按 */
+.mem-term {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 38px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  word-break: break-word;
+  cursor: pointer;
+}
+.mem-term:hover {
+  color: var(--primary);
+}
+.mem-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.mem-icon-btn svg {
+  width: 20px;
+  height: 20px;
+}
+.mem-icon-btn:hover {
+  background: var(--hairline);
+  color: var(--text-primary);
+}
+.mem-icon-sm {
+  width: 26px;
+  height: 26px;
+}
+.mem-icon-sm svg {
+  width: 16px;
+  height: 16px;
+}
+
+.mem-sentence-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 20px;
+}
+.mem-sentence {
+  margin: 0;
+  max-width: 540px;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.mem-mark {
+  color: var(--primary);
+  background: transparent;
+  font-weight: 700;
+}
+
+/* 未揭曉與已揭曉的高度接近，點下去版面不會整個跳動 */
+.mem-answer {
+  min-height: 92px;
+  margin-top: 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.mem-answer.is-open {
+  padding-top: 20px;
+  border-top: 1px solid var(--hairline);
+}
+.mem-reveal {
+  padding: 9px 20px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--primary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.mem-reveal:hover {
+  background: var(--primary-soft);
+}
+.mem-translation {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.mem-sentence-zh {
+  max-width: 540px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+.mem-actions {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+.mem-next {
+  min-width: 200px;
+  padding: 13px 32px;
+  border: none;
+  border-radius: 12px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: filter 0.15s ease;
+}
+.mem-next:hover {
+  filter: brightness(0.94);
+}

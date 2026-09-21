@@ -3,102 +3,75 @@
 <head>
   <meta charset="UTF-8" />
   <title>FlowStudy 學習面板</title>
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <link rel="alternate icon" href="icon-32.png" />
   <link rel="stylesheet" href="review.css" />
+  <link rel="stylesheet" href="review-pages.css" />
   <script src="theme-init.js"></script>
 </head>
 <body>
   <div class="layout">
     <aside class="sidebar">
-      <div class="sidebar-logo">FlowStudy</div>
+      <div class="sidebar-logo">
+        <img class="sidebar-logo-mark" src="icon.svg" alt="" />
+        FlowStudy
+      </div>
+
       <nav class="sidebar-nav">
         <a class="sidebar-link" data-view="home" href="review.html">
-          <span class="sidebar-link-icon">🏠</span>首頁
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/>
+            <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+          </svg>
+          首頁
         </a>
-        <a class="sidebar-link" data-view="words" href="review.html?view=words">
-          <span class="sidebar-link-icon">📖</span>收藏單字
+
+        <!-- 記憶固化（間隔重複複習）目前不放進側邊欄——使用者現階段以大量沉浸為主，
+             用不到複習功能。頁面與路由都保留著，需要時把這個連結加回來即可：
+             <a class="sidebar-link" data-view="reinforce" href="review.html?view=reinforce">…</a> -->
+
+        <a class="sidebar-link" data-view="memory" href="review.html?view=memory">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+          記憶固化
+        </a>
+
+        <a class="sidebar-link" data-view="settings" href="review.html?view=settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+          設定
         </a>
       </nav>
-      <div class="sidebar-bottom">
-        <a class="sidebar-link" data-view="settings" href="review.html?view=settings">
-          <span class="sidebar-link-icon">⚙️</span>設定
-        </a>
-      </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <div>
-          <h1 id="pageTitle">首頁</h1>
-          <p class="topbar-sub">歡迎回來！<span id="todayDateLabel"></span></p>
-        </div>
+        <div class="topbar-title">儀表板</div>
       </header>
 
-      <section id="homeView">
-        <div class="cards-row">
-          <div class="card goal-card">
-            <div class="card-label">今日沉浸分鐘數</div>
-            <div class="goal-big-value" id="todayMinutesValue">0</div>
-            <div class="progress-track">
-              <div class="progress-fill" id="goalProgressFill" style="width: 0%"></div>
+      <div class="content">
+        <div class="content-inner">
+          <div class="page-header">
+            <div>
+              <h1 class="page-title" id="pageTitle">首頁</h1>
+              <p class="page-subtitle" id="pageSubtitle"></p>
             </div>
-            <div class="goal-meta-row">
-              <span id="goalMinutesLabel">0 / 30 mins</span>
-              <span id="goalRemainingText"></span>
-            </div>
+            <span class="lang-badge" id="langBadge">English</span>
           </div>
 
-          <div class="card total-card">
-            <div class="card-label">總沉浸時數</div>
-            <div class="total-big-value" id="totalTimeValue">0 m</div>
-          </div>
+          <section id="homeView"></section>
+          <section id="memoryView"></section>
+          <section id="settingsView"></section>
         </div>
-
-        <section class="card chart-section">
-          <h2>最近 7 天沉浸時數</h2>
-          <div class="chart-legend"><span class="legend-dot"></span>沉浸時間</div>
-          <div class="bar-chart" id="barChart"></div>
-        </section>
-      </section>
-
-      <section id="wordsView">
-        <div class="word-list" id="wordList"></div>
-      </section>
-
-      <section id="settingsView">
-        <div class="card settings-card">
-          <h2>每日沉浸目標</h2>
-          <p class="settings-hint">設定每天想沉浸多久，首頁的進度條會依這個目標計算。</p>
-          <div class="goal-slider-row">
-            <input type="range" id="goalSlider" min="0" max="4" step="1" list="goalTicks" />
-            <datalist id="goalTicks">
-              <option value="0"></option>
-              <option value="1"></option>
-              <option value="2"></option>
-              <option value="3"></option>
-              <option value="4"></option>
-            </datalist>
-          </div>
-          <div class="goal-slider-labels">
-            <span>15 分鐘</span>
-            <span>30 分鐘</span>
-            <span>1 小時</span>
-            <span>2 小時</span>
-            <span>3 小時</span>
-          </div>
-          <div class="goal-slider-current">目前目標：<strong id="goalSliderValue">30 分鐘</strong></div>
-        </div>
-
-        <div class="card settings-card">
-          <h2>外觀</h2>
-          <p class="settings-hint">選擇淺色或深色介面。</p>
-          <div class="theme-toggle-row">
-            <button class="theme-btn" id="themeLightBtn" data-theme-value="light">☀️ 淺色</button>
-            <button class="theme-btn" id="themeDarkBtn" data-theme-value="dark">🌙 深色</button>
-          </div>
-        </div>
-      </section>
+      </div>
     </main>
   </div>
-  <script src="review.js"></script>
+
+  <!-- type="module" 讓這個頁面可以直接 import core/ 底下的資料層，不需要打包工具 -->
+  <script type="module" src="review.js"></script>
 </body>
 </html>

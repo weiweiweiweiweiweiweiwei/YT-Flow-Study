@@ -1,346 +1,1051 @@
+/* ============================================================================
+   FlowStudy 學習面板
+   ----------------------------------------------------------------------------
+   版面與視覺以 zeroStudy 網頁版儀表板為參考基準重建：
+   側邊欄 288px、主內容 max-width 1024px 置中、卡片式區塊、
+   大數字為視覺主體、次要資訊用灰階弱化。
+
+   色票命名沿用 Tailwind / shadcn 的語意（primary / muted / card / border），
+   這樣看原始 HTML 時能對得起來，日後調整也不會迷路。
+   ============================================================================ */
+
 * {
   box-sizing: border-box;
 }
 
 :root {
-  --bg: #f7f8fa;
-  --sidebar-bg: #ffffff;
-  --sidebar-border: #eef0f3;
+  /* 頁面底色。卡片是純白，底色稍深一階（但只差一點點），
+     卡片邊界靠細框線界定，而不是靠明顯的色差。 */
+  --bg: #f9fafb;
   --card-bg: #ffffff;
-  --card-border: #eef0f3;
-  --card-shadow: 0 1px 4px rgba(16, 24, 40, 0.06);
-  --text-primary: #14141f;
-  --text-secondary: #888899;
-  --text-tertiary: #a6a6b5;
-  --accent: #3b82f6;
-  --accent-soft: rgba(59, 130, 246, 0.1);
-  --track-bg: #eef0f3;
-  --link-hover: rgba(59, 130, 246, 0.08);
-  --link-active-bg: rgba(59, 130, 246, 0.1);
+  --card-border: #e2e8f0; /* slate-200 */
+  --hairline: #f1f5f9;    /* slate-100，卡片內分隔線 */
+  --card-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+
+  --sidebar-bg: #ffffff;
+  --sidebar-border: #e2e8f0;
+
+  --text-primary: #020617;   /* slate-950 */
+  --text-strong: #0f172a;    /* slate-900 */
+  --text-secondary: #64748b; /* slate-500 */
+  --text-tertiary: #94a3b8;  /* slate-400 */
+
+  --primary: #2563eb;        /* blue-600 */
+  --primary-soft: rgba(37, 99, 235, 0.1);
+  --primary-border: #dbeafe; /* blue-100 */
+  --primary-bg: #eff6ff;     /* blue-50 */
+  --primary-text: #1d4ed8;   /* blue-700 */
+
+  --track: #e2e8f0;
+  --nav-active: rgb(228, 228, 231); /* 側欄選取狀態：中性灰 */
+  --ring-color: #94a3b8; /* 方格圖 hover 的外圈（slate-400） */
+
+  /* 長條圖專用的兩個顏色。刻意跟 --primary 分開：
+     --primary 同時用在進度條、連結、側欄，動它會牽連整個介面。
+     先給 hex 後備值，再用 lab() 覆蓋——舊瀏覽器讀不懂 lab() 會自動略過那一行。 */
+  --chart-blue: #3b82f6;
+  --chart-blue: lab(54.1736% 13.3369 -74.6839);
+  --chart-green: #4ade80;
+  --chart-green: lab(78.503% -64.9265 39.7492);
+
+  --indigo-bg: #eef2ff;
+  --indigo-fg: #6366f1;
+  --emerald-bg: #ecfdf5;
+  --emerald-fg: #10b981;
+  --emerald-text: #047857;
+  --red-bg: #fef2f2;
+  --red-text: #b91c1c;
+  --amber-bg: #fffbeb;
+  --amber-border: #fde68a;
+  --amber-fg: #f59e0b;
+
+  /* 沉浸習慣方格圖的 5 級深淺 */
+  --heat-0: #f1f5f9;
+  --heat-1: #d1fae5;
+  --heat-2: #6ee7b7;
+  --heat-3: #34d399;
+  --heat-4: #059669;
+
+  /* 側欄標誌的底板。深色托住黃色的 C，對比才夠。
+     兩個主題各給一個值——淺色主題用近黑，深色主題再用近黑就跟側欄糊在一起了。 */
+  --logo-tile: #111827;
+  --logo-tile-ring: rgba(15, 23, 42, 0.08);
 }
 
 html[data-theme="dark"] {
-  --bg: #101116;
-  --sidebar-bg: #16171d;
-  --sidebar-border: #24252d;
-  --card-bg: #1a1b22;
-  --card-border: #24252d;
-  --card-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
-  --text-primary: #f0f0f5;
-  --text-secondary: #93939f;
-  --text-tertiary: #6d6d78;
-  --accent: #5b9dff;
-  --accent-soft: rgba(91, 157, 255, 0.16);
-  --track-bg: #24252d;
-  --link-hover: rgba(91, 157, 255, 0.1);
-  --link-active-bg: rgba(91, 157, 255, 0.16);
+  --bg: #0b0f19;
+  --card-bg: #131824;
+  --card-border: #232a3a;
+  --hairline: #1c2231;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+
+  --sidebar-bg: #0f1420;
+  --sidebar-border: #232a3a;
+
+  --text-primary: #f8fafc;
+  --text-strong: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+
+  --primary: #60a5fa;
+  --primary-soft: rgba(96, 165, 250, 0.14);
+  --primary-border: #1e3a5f;
+  --primary-bg: rgba(96, 165, 250, 0.1);
+  --primary-text: #93c5fd;
+
+  --track: #232a3a;
+  --nav-active: rgba(228, 228, 231, 0.12);
+  --ring-color: #64748b;
+
+  --indigo-bg: rgba(99, 102, 241, 0.14);
+  --indigo-fg: #818cf8;
+  --emerald-bg: rgba(16, 185, 129, 0.14);
+  --emerald-fg: #34d399;
+  --emerald-text: #6ee7b7;
+  --red-bg: rgba(239, 68, 68, 0.14);
+  --red-text: #fca5a5;
+  --amber-bg: rgba(245, 158, 11, 0.12);
+  --amber-border: rgba(245, 158, 11, 0.3);
+  --amber-fg: #fbbf24;
+
+  --heat-0: #1c2231;
+  --heat-1: #14532d;
+  --heat-2: #166534;
+  --heat-3: #16a34a;
+  --heat-4: #22c55e;
+
+  --logo-tile: #232a3a;
+  --logo-tile-ring: rgba(255, 255, 255, 0.08);
 }
 
 body {
   margin: 0;
-  min-height: 100vh;
-  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
   background: var(--bg);
   color: var(--text-primary);
-  transition: background 0.15s ease, color 0.15s ease;
+  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", Roboto, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* ---------- 版面骨架 ---------- */
+
 .layout {
-  display: flex;
   min-height: 100vh;
 }
 
 .sidebar {
-  width: 220px;
-  flex-shrink: 0;
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 288px;
   display: flex;
   flex-direction: column;
-  padding: 24px 16px;
+  padding: 16px 12px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--sidebar-border);
+  z-index: 10;
 }
+
 .sidebar-logo {
-  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 28px;
+  font-size: 24px;
   font-weight: 700;
-  margin-bottom: 24px;
-  padding: 0 10px;
-  color: var(--accent);
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
+/* 標誌本身是「深黑外框 + 黃色填滿」的 C。裸放在純白側欄上只剩一個孤零零的字母，
+   沒有產品標誌該有的份量，所以托一層深色圓角底板——
+   和 zeroStudy 用深色圓形徽章托住圖示是同一個作法。
+   刻意用圓角方形而不是圓形：Chrome 工具列上那組 PNG 圖示是方的，
+   兩邊要看起來是同一個東西。
+
+   底板用近黑，跟圖示自己的外框同色系，外框會自然融進底板，
+   視覺上只留下乾淨的黃色 C。
+   padding 會把圖片內容往內縮，所以外圈那 1px 不會被圖蓋掉。 */
+.sidebar-logo-mark {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  padding: 6px;
+  border-radius: 11px;
+  background: var(--logo-tile);
+  box-shadow: inset 0 0 0 1px var(--logo-tile-ring);
+}
+
 .sidebar-nav {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.sidebar-bottom {
-  margin-top: auto;
-  padding-top: 12px;
-  border-top: 1px solid var(--sidebar-border);
-}
+
 .sidebar-link {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 12px;
   border-radius: 8px;
-  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
   color: var(--text-secondary);
-  font-size: 14px;
-  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.sidebar-link-icon {
-  font-size: 14px;
-}
+/* 側欄的 hover / 選取狀態刻意用中性灰而不是主色藍：
+   主色留給真正需要吸引注意的東西（進度條、到期數量），
+   導覽只要「看得出現在在哪一頁」就夠了，不需要搶視線。 */
 .sidebar-link:hover {
-  background: var(--link-hover);
+  color: var(--text-primary);
+  background-color: var(--nav-active);
 }
 .sidebar-link.active {
-  background: var(--link-active-bg);
-  color: var(--accent);
+  color: var(--text-primary);
+  background-color: var(--nav-active);
+  font-weight: 600;
+}
+.sidebar-link svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.sidebar-badge {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .main {
-  flex: 1;
-  padding: 32px 40px 80px;
-  max-width: 860px;
-  /* .main 是 flex item，光靠 max-width 只會讓它變窄，不會自動置中——
-     沒有 margin:auto 的話它就是貼著側邊欄左對齊，這正是版面看起來偏左的原因。 */
-  margin: 0 auto;
+  padding-left: 288px;
+  min-height: 100vh;
 }
 
 .topbar {
-  margin-bottom: 24px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--card-border);
+  background: var(--card-bg);
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
-.topbar h1 {
-  margin: 0 0 4px;
-  font-size: 24px;
+.topbar-title {
+  font-size: 18px;
+  font-weight: 600;
 }
-.topbar-sub {
+
+.content {
+  padding: 32px;
+}
+.content-inner {
+  max-width: 1024px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.page-title {
   margin: 0;
-  color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--text-strong);
 }
+.page-subtitle {
+  margin: 4px 0 0;
+  font-size: 15px;
+  color: var(--text-secondary);
+}
+
+/* 右上角的學習語言標籤 */
+.lang-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--hairline);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.lang-badge::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+/* ---------- 卡片 ---------- */
 
 .card {
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: 14px;
+  border-radius: 12px;
   box-shadow: var(--card-shadow);
 }
+.card-2xl {
+  border-radius: 16px;
+}
 
-.cards-row {
+.overview-grid {
   display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 16px;
-  margin-bottom: 20px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
 }
-.goal-card,
-.total-card {
-  padding: 20px 22px;
+.overview-grid > .goal-card {
+  grid-column: span 2;
 }
-.card-label {
-  font-size: 13px;
+
+@media (max-width: 900px) {
+  .sidebar {
+    position: static;
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .main {
+    padding-left: 0;
+  }
+  .overview-grid {
+    grid-template-columns: 1fr;
+  }
+  .overview-grid > .goal-card {
+    grid-column: span 1;
+  }
+  .content {
+    padding: 20px;
+  }
+}
+
+/* ---------- 首頁：每日目標卡 ---------- */
+
+.goal-card {
+  position: relative;
+  overflow: hidden;
+  border-color: var(--primary-border);
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+}
+/* 右上角的裝飾閃電，極低透明度，純粹讓大面積留白不空洞 */
+.goal-card-glyph {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 140px;
+  height: 140px;
+  opacity: 0.05;
+  color: var(--primary);
+  pointer-events: none;
+}
+
+.goal-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* zeroStudy 是靠 pb-2 + p-6 的內距堆出這段距離的；
+     我們的標記沒有多包一層容器，直接用外距達到同樣的視覺間隔 */
+  margin-bottom: 45px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--primary-bg);
+  color: var(--primary-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.pill svg {
+  width: 12px;
+  height: 12px;
+}
+
+.goal-remaining {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.goal-remaining-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+}
+.goal-remaining-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
   color: var(--text-secondary);
-  margin-bottom: 8px;
 }
-.goal-big-value {
-  font-size: 40px;
+.goal-remaining-value svg {
+  width: 14px;
+  height: 14px;
+}
+.goal-remaining-sec {
+  font-size: 12px;
+  opacity: 0.5;
+}
+
+.goal-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.goal-figure-value {
+  font-size: 60px;
   font-weight: 700;
   line-height: 1;
-  margin: 8px 0 14px;
+  letter-spacing: -0.03em;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
 }
+.goal-figure-label {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.goal-progress-caption {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+
 .progress-track {
-  height: 8px;
+  position: relative;
+  height: 16px;
+  width: 100%;
   border-radius: 999px;
-  background: var(--track-bg);
+  background: var(--track);
   overflow: hidden;
-  margin-bottom: 8px;
 }
 .progress-fill {
   height: 100%;
-  background: var(--accent);
   border-radius: 999px;
-  transition: width 0.3s ease;
+  background: var(--primary);
+  transition: width 0.8s ease-out;
 }
-.goal-meta-row {
-  display: flex;
-  justify-content: space-between;
+
+/* 每日目標進度條的「跑光」效果。
+   作法是在藍底上疊一層 200% 寬的透明→白→透明漸層，
+   再讓 background-position-x 從 200% 一路跑到 -100%，
+   看起來就像一道白色光暈持續從左往右掃過去。
+   同時讓外圈的藍色光暈呼吸，讓進度條有「正在進行中」的感覺。 */
+@keyframes flowstudy-shimmer {
+  from { background-position-x: 200%; }
+  to   { background-position-x: -100%; }
+}
+@keyframes flowstudy-pulse-glow {
+  0%, 100% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.45); }
+  50%      { box-shadow: 0 0 18px rgba(59, 130, 246, 0.75); }
+}
+
+.progress-fill.is-live {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.5) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: flowstudy-shimmer 1.6s linear infinite, flowstudy-pulse-glow 2.4s ease-in-out infinite;
+}
+/* 使用者若在系統設定關閉了動畫效果，就不要硬播 */
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill.is-live {
+    animation: none;
+  }
+}
+
+.goal-footer {
+  margin-top: 24px;
   font-size: 12px;
+  font-weight: 500;
   color: var(--text-secondary);
 }
+.goal-footer.is-done {
+  color: #16a34a;
+}
 
-.total-card {
+/* ---------- 首頁：右側摘要卡（分段堆疊） ---------- */
+
+.summary-card {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  text-align: center;
+  overflow: hidden;
 }
-.total-big-value {
-  font-size: 30px;
+.summary-section {
+  padding: 16px 24px;
+}
+.summary-section + .summary-section {
+  border-top: 1px solid var(--hairline);
+}
+.summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.summary-label {
+  font-size: 16px;
   font-weight: 700;
-  margin-top: 6px;
-  color: var(--accent);
+  color: var(--text-secondary);
+}
+.summary-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.summary-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.summary-icon.indigo {
+  background: var(--indigo-bg);
+  color: var(--indigo-fg);
+}
+.summary-icon.emerald {
+  background: var(--emerald-bg);
+  color: var(--emerald-fg);
 }
 
-.chart-section {
-  padding: 20px 22px;
+.summary-value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+  white-space: nowrap;
 }
-.chart-section h2 {
-  font-size: 15px;
-  margin: 0 0 8px;
+.summary-value-num {
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
   color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
-.chart-legend {
+.summary-value-unit {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+}
+
+/* 相較上週的變化率 */
+.delta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.delta-badge svg {
+  width: 16px;
+  height: 16px;
+}
+.delta-badge.up {
+  background: var(--emerald-bg);
+  color: var(--emerald-text);
+}
+.delta-badge.down {
+  background: var(--red-bg);
+  color: var(--red-text);
+}
+
+.summary-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.summary-breakdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.summary-breakdown-item svg {
+  width: 19px;
+  height: 19px;
+}
+.summary-breakdown-item strong {
+  color: var(--text-strong);
+}
+.dot-emerald { color: var(--emerald-fg); }
+.dot-blue { color: var(--primary); }
+
+/* ---------- 沉浸習慣方格圖 ---------- */
+
+.heatmap-card {
+  padding: 24px;
+  /* 提示框的定位基準，而且要能往上溢出（最上排的方格需要） */
+  position: relative;
+  overflow: visible;
+}
+.heatmap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.heatmap-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.heatmap-title svg {
+  width: 18px;
+  height: 18px;
+  color: var(--emerald-fg);
+}
+.heatmap-legend {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 20px;
+  color: var(--text-tertiary);
 }
-.legend-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
+.heatmap-legend i {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
   display: inline-block;
 }
 
+.heatmap-legend i {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  display: inline-block;
+  background: var(--heat-0);
+}
+.heatmap-legend i.l1 { background: var(--heat-1); }
+.heatmap-legend i.l2 { background: var(--heat-2); }
+.heatmap-legend i.l3 { background: var(--heat-3); }
+.heatmap-legend i.l4 { background: var(--heat-4); }
+
+/* 橫向可捲動，視窗變窄時不會把整頁擠壞。
+   注意：這裡「不能」放提示框。CSS 規範規定 overflow 兩軸只要有一軸是 auto，
+   另一軸的 visible 就會被當成 auto——往上溢出的提示框一定會被裁掉。
+   所以提示框改掛在 .heatmap-card 上（見上面）。 */
+.heatmap-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+/* 版面：最左邊一欄是星期標籤，其餘每一欄是一週。
+   欄寬用 1fr 平均攤開，方格圖才會撐滿整張卡片而不是縮在左上角。 */
+.heatmap-grid {
+  display: grid;
+  grid-template-columns: auto repeat(var(--weeks, 5), minmax(36px, 1fr));
+  grid-template-rows: auto repeat(7, auto);
+  gap: 10px 12px;
+  align-items: center;
+  min-width: 420px;
+}
+.heatmap-corner {
+  /* 左上角的空格：星期標籤欄與日期標籤列的交會處 */
+}
+.heatmap-col-label,
+.heatmap-row-label {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.heatmap-col-label {
+  text-align: center;
+}
+.heatmap-row-label {
+  padding-right: 4px;
+  text-align: right;
+}
+.heatmap-cell {
+  width: 100%;
+  max-width: 44px;
+  aspect-ratio: 1;
+  justify-self: center;
+  border-radius: 8px;
+  background: var(--heat-0);
+  cursor: pointer;
+  transition: box-shadow 0.12s ease;
+}
+/* 滑過時在方格外圍加一圈深灰光暈。
+   用 box-shadow 而不是 outline/border：它不佔版面，方格不會被推開，
+   兩層陰影做出「留白 + 外圈」的效果（等同 ring-2 + ring-offset-1）。 */
+.heatmap-cell:not(.is-empty):hover {
+  box-shadow: 0 0 0 1px var(--card-bg), 0 0 0 3px var(--ring-color);
+}
+.heatmap-cell.l1 { background: var(--heat-1); }
+.heatmap-cell.l2 { background: var(--heat-2); }
+.heatmap-cell.l3 { background: var(--heat-3); }
+.heatmap-cell.l4 { background: var(--heat-4); }
+.heatmap-cell.is-empty {
+  background: transparent;
+}
+
+/* ---------- 首頁：學習成效長條圖 ---------- */
+
+.home-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* 底部留白：讓最後一張卡片也能被捲到畫面正中央。
+   用視窗高度的比例而不是固定 px，螢幕大小不同都適用。
+   背景保持頁面底色（不設背景就是透明，自然透出 --bg）。 */
+.home-bottom-spacer {
+  height: 45vh;
+  flex-shrink: 0;
+}
+
+.chart-card {
+  padding: 24px;
+  /* 讓提示框可以溢出到卡片上方。不開的話強制置頂的提示框會被裁掉。 */
+  overflow: visible;
+}
+.chart-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-strong);
+  margin-bottom: 18px;
+}
 .bar-chart {
+  position: relative; /* 提示框以此為定位基準 */
+  display: flex;
+  gap: 10px;
+  height: 200px;
+}
+
+/* 長條圖與方格圖共用的提示框外觀：白底、細框、淡陰影 */
+.chart-tooltip,
+.heatmap-tooltip {
+  position: absolute;
+  z-index: 20;
+  padding: 10px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--card-bg);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  white-space: nowrap;
+  pointer-events: none; /* 不要擋住底下的滑鼠事件，否則會閃爍 */
+}
+/* 垂直位置寫死在「柱子區域的正上方」，JS 只負責算水平位置。
+   用 bottom: 100% 而不是某個負的 top 值，是因為這樣不管提示框幾行高，
+   它的底邊永遠貼著柱子頂端上方 12px，絕對不會蓋到攻頂那天的柱體。
+   代價是會往上溢出卡片外框（含標題列）——這是刻意的，資料不被遮住優先。 */
+.chart-tooltip {
+  bottom: calc(100% + 12px);
+}
+.chart-tooltip-title,
+.heatmap-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.heatmap-tooltip-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.bar-cols {
+  flex: 1;
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 4px;
-  height: 150px;
-  padding: 0 6px;
+  gap: 12px;
+  height: 100%;
 }
 .bar-col {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
+  gap: 6px;
   height: 100%;
 }
-.bar {
-  width: 8px;
-  background: var(--accent);
-  border-radius: 999px;
-  min-height: 4px;
-}
-.bar-minutes {
-  font-size: 11px;
+.bar-value {
+  font-size: 12px;
+  font-weight: 600;
   color: var(--text-secondary);
-  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+  min-height: 16px;
 }
-.bar-day {
-  font-size: 11px;
+.bar-slot {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+}
+.bar {
+  width: 100%;
+  max-width: 16px;
+  border-radius: 4px 4px 0 0;
+  transition: height 0.5s ease-out;
+}
+.bar-minutes { background: var(--chart-blue); }
+.bar-words { background: var(--chart-green); }
+
+/* 刻度改成「等比例、下限 30」之後，柱子的高度本身就已經誠實反映數值，
+   不再需要破表符號（鋸齒或波浪省略符號）——沒有任何柱子會被截斷。 */
+.bar-value-sep {
+  margin: 0 2px;
   color: var(--text-tertiary);
-  margin-top: 8px;
+  font-weight: 400;
+}
+.bar-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.chart-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+.legend-dot.dot-minutes { background: var(--chart-blue); }
+.legend-dot.dot-words { background: var(--chart-green); }
+.legend-note {
+  color: var(--text-tertiary);
+  font-size: 11px;
 }
 
-#wordsView,
-#settingsView {
-  display: none;
-}
-.word-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.word-card {
-  padding: 14px 16px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-.word-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.word-title {
-  font-size: 17px;
-  font-weight: 700;
-}
-.word-def {
-  font-size: 13px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.word-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-.word-status-tag {
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  white-space: nowrap;
-  background: rgba(240, 173, 78, 0.16);
-  color: #b8720b;
-}
-.word-unmark-btn {
-  border: 1px solid var(--card-border);
-  background: var(--bg);
-  color: var(--text-primary);
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.word-unmark-btn:hover {
-  background: var(--track-bg);
-}
+/* ---------- 空狀態 ---------- */
+
 .empty-hint {
-  color: var(--text-tertiary);
-  font-size: 14px;
-  padding: 40px 0;
+  padding: 40px 24px;
   text-align: center;
+  color: var(--text-secondary);
+  font-size: 14px;
 }
+
+/* ---------- 設定 ---------- */
 
 .settings-card {
-  padding: 22px 24px;
-  margin-bottom: 16px;
+  padding: 24px;
 }
-.settings-card h2 {
+.settings-card + .settings-card {
+  margin-top: 24px;
+}
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 16px;
-  margin: 0 0 4px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.settings-head svg {
+  width: 18px;
+  height: 18px;
+  color: var(--primary);
 }
 .settings-hint {
+  margin: 6px 0 20px;
   font-size: 13px;
   color: var(--text-secondary);
-  margin: 0 0 20px;
 }
 
 .goal-slider-row {
-  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
 }
-.goal-slider-row input[type="range"] {
+.goal-slider-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-strong);
+}
+.goal-slider-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+input[type="range"] {
   width: 100%;
-  accent-color: var(--accent);
+  accent-color: var(--primary);
   cursor: pointer;
 }
-.goal-slider-labels {
+.goal-slider-scale {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
+  margin-top: 8px;
+  font-size: 12px;
   color: var(--text-tertiary);
-  padding: 6px 2px 0;
 }
-.goal-slider-current {
-  margin-top: 16px;
+
+/* ---------- 設定：沉浸時數維護 ---------- */
+
+.data-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  flex-wrap: wrap;
+}
+.data-row + .data-row {
+  border-top: 1px solid var(--hairline);
+}
+.data-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.data-sub {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.data-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.data-block {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--card-border);
+}
+.data-block-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-strong);
+  margin-bottom: 4px;
+}
+
+.data-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.data-inline input[type="number"] {
+  width: 74px;
+  padding: 9px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.data-inline input[type="number"]:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+.data-unit {
   font-size: 13px;
   color: var(--text-secondary);
 }
-.goal-slider-current strong {
+
+.data-btn {
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
   color: var(--text-primary);
+}
+.data-btn:hover:not(:disabled) {
+  background: var(--hairline);
+}
+.data-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.data-btn-primary {
+  border-color: transparent;
+  background: var(--primary);
+  color: #fff;
+}
+.data-btn-primary:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+/* 刪除是破壞性動作，平常低調、滑上去才轉紅 */
+.data-btn-danger:hover:not(:disabled) {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+}
+.data-suspicious .data-value {
+  color: #b45309;
 }
 
 .theme-toggle-row {
@@ -359,10 +1064,10 @@ body {
   cursor: pointer;
 }
 .theme-btn:hover {
-  background: var(--track-bg);
+  background: var(--hairline);
 }
 .theme-btn.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
 }
