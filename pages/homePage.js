@@ -82,6 +82,19 @@ function heatmapStart(now = new Date()) {
   return start;
 }
 
+function renderRestoreNotice() {
+  return `<div class="card restore-notice">
+    <div>
+      <div class="restore-notice-title">目前沒有任何學習紀錄</div>
+      <p class="restore-notice-text">
+        如果之前的單字或沉浸時數不見了，可以從「下載」資料夾裡的
+        <b>FlowStudy Backups</b> 選最新的備份檔還原。
+      </p>
+    </div>
+    <a class="data-btn data-btn-primary restore-notice-btn" href="review.html?view=settings">前往還原</a>
+  </div>`;
+}
+
 export async function renderHomePage(root) {
   stopCountdown();
   root.innerHTML = `<div class="card empty-hint">載入中…</div>`;
@@ -112,7 +125,12 @@ export async function renderHomePage(root) {
     });
     const habits = calculateImmersionHabits(dailyStats, goalMinutes);
 
+    // 完全沒有資料時，最可能的情況是「資料被清掉了」（擴充功能被移除後重裝、資料夾改名）。
+    // 這正是使用者最需要知道「可以從備份救回來」的時刻，所以直接在首頁提示。
+    const isEmpty = words.length === 0 && totalSeconds === 0;
+
     root.innerHTML = `<div class="home-stack">
+      ${isEmpty ? renderRestoreNotice() : ""}
       ${renderOverview({ todaySeconds, totalSeconds, words, goalMinutes, now })}
       ${renderWeeklyChart(dailyStats)}
       ${renderHeatmap(habits, start)}

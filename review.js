@@ -17,7 +17,7 @@ import { renderSettingsPage } from "./pages/settingsPage.js";
 const VIEWS = {
   home: { title: "首頁", subtitle: "歡迎回來！保持習慣就會不斷進步", section: "homeView" },
   memory: { title: "記憶固化", subtitle: "", section: "memoryView" },
-  settings: { title: "設定", subtitle: "調整每日目標與介面外觀", section: "settingsView" },
+  settings: { title: "設定", subtitle: "調整每日目標、介面外觀與資料備份", section: "settingsView" },
 };
 
 function getView() {

@@ -70,52 +70,79 @@
      兩個主題各給一個值——淺色主題用近黑，深色主題再用近黑就跟側欄糊在一起了。 */
   --logo-tile: #111827;
   --logo-tile-ring: rgba(15, 23, 42, 0.08);
+
+  --topbar-bg: var(--card-bg);
+  --primary-fill: var(--primary); /* 填滿色、上面放白字的地方（徽章、按鈕） */
+  --success-text: #16a34a;
+  --btn-bg: var(--card-bg);
+  --btn-hover-bg: var(--hairline);
+  --btn-primary-bg: var(--primary);
+  --btn-primary-hover-bg: #1d4ed8;
 }
 
+/* 深色主題直接取自 GitHub 的深色介面（Primer 色票），不用偏藍的黑：
+   內容區 #0d1117、側欄與頂欄 #010409、卡片靠 #3d444d 的框線界定而不是色差，
+   跟 GitHub 的檔案列表、側欄卡片是同一個作法。 */
 html[data-theme="dark"] {
-  --bg: #0b0f19;
-  --card-bg: #131824;
-  --card-border: #232a3a;
-  --hairline: #1c2231;
-  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  color-scheme: dark; /* 捲軸、檔案選擇框、滑桿這些原生元件也跟著變深色 */
 
-  --sidebar-bg: #0f1420;
-  --sidebar-border: #232a3a;
+  --bg: #0d1117;
+  --card-bg: #0d1117;
+  --card-border: #3d444d;
+  --hairline: #2f353d;
+  --card-shadow: none;
 
-  --text-primary: #f8fafc;
-  --text-strong: #e2e8f0;
-  --text-secondary: #94a3b8;
-  --text-tertiary: #64748b;
+  --sidebar-bg: #010409;
+  --sidebar-border: #3d444d;
+  --topbar-bg: #010409;
 
-  --primary: #60a5fa;
-  --primary-soft: rgba(96, 165, 250, 0.14);
-  --primary-border: #1e3a5f;
-  --primary-bg: rgba(96, 165, 250, 0.1);
-  --primary-text: #93c5fd;
+  --text-primary: #f0f6fc;
+  --text-strong: #f0f6fc;
+  --text-secondary: #9198a1;
+  --text-tertiary: #6e7681;
 
-  --track: #232a3a;
-  --nav-active: rgba(228, 228, 231, 0.12);
-  --ring-color: #64748b;
+  --primary: #4493f8;
+  --primary-soft: rgba(56, 139, 253, 0.15);
+  --primary-border: rgba(56, 139, 253, 0.4);
+  --primary-bg: rgba(56, 139, 253, 0.1);
+  --primary-text: #4493f8;
+  /* 上面要放白字的填滿色用 GitHub 較深的那階藍，#4493f8 配白字對比不夠 */
+  --primary-fill: #1f6feb;
 
-  --indigo-bg: rgba(99, 102, 241, 0.14);
-  --indigo-fg: #818cf8;
-  --emerald-bg: rgba(16, 185, 129, 0.14);
-  --emerald-fg: #34d399;
-  --emerald-text: #6ee7b7;
-  --red-bg: rgba(239, 68, 68, 0.14);
-  --red-text: #fca5a5;
-  --amber-bg: rgba(245, 158, 11, 0.12);
-  --amber-border: rgba(245, 158, 11, 0.3);
-  --amber-fg: #fbbf24;
+  --track: #21262d;
+  --nav-active: rgba(101, 108, 118, 0.2);
+  --ring-color: #9198a1;
 
-  --heat-0: #1c2231;
-  --heat-1: #14532d;
-  --heat-2: #166534;
-  --heat-3: #16a34a;
-  --heat-4: #22c55e;
+  --chart-blue: #4493f8;
+  --chart-green: #3fb950;
 
-  --logo-tile: #232a3a;
-  --logo-tile-ring: rgba(255, 255, 255, 0.08);
+  --indigo-bg: rgba(171, 125, 248, 0.15);
+  --indigo-fg: #ab7df8;
+  --emerald-bg: rgba(46, 160, 67, 0.15);
+  --emerald-fg: #3fb950;
+  --emerald-text: #3fb950;
+  --red-bg: rgba(248, 81, 73, 0.1);
+  --red-text: #f85149;
+  --amber-bg: rgba(187, 128, 9, 0.15);
+  --amber-border: rgba(187, 128, 9, 0.4);
+  --amber-fg: #d29922;
+
+  /* GitHub 貢獻方格圖的五階綠 */
+  --heat-0: #151b23;
+  --heat-1: #033a16;
+  --heat-2: #196c2e;
+  --heat-3: #2ea043;
+  --heat-4: #56d364;
+
+  --logo-tile: #151b23;
+  --logo-tile-ring: rgba(240, 246, 252, 0.1);
+
+  --success-text: #3fb950;
+  --btn-bg: #212830;
+  --btn-hover-bg: #262c36;
+  /* GitHub 的主要按鈕是綠色（Code、Create 那顆） */
+  --btn-primary-bg: #238636;
+  --btn-primary-hover-bg: #29903b;
 }
 
 body {
@@ -215,7 +242,7 @@ body {
   min-width: 22px;
   padding: 2px 7px;
   border-radius: 999px;
-  background: var(--primary);
+  background: var(--primary-fill);
   color: #fff;
   font-size: 11px;
   font-weight: 700;
@@ -234,7 +261,7 @@ body {
   align-items: center;
   padding: 0 24px;
   border-bottom: 1px solid var(--card-border);
-  background: var(--card-bg);
+  background: var(--topbar-bg);
   position: sticky;
   top: 0;
   z-index: 5;
@@ -499,7 +526,7 @@ body {
   color: var(--text-secondary);
 }
 .goal-footer.is-done {
-  color: #16a34a;
+  color: var(--success-text);
 }
 
 /* ---------- 首頁：右側摘要卡（分段堆疊） ---------- */
@@ -877,6 +904,33 @@ body {
   font-size: 11px;
 }
 
+/* ---------- 首頁：資料是空的時候的還原提示 ---------- */
+
+.restore-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 24px;
+  border-color: var(--amber-border);
+  background: var(--amber-bg);
+}
+.restore-notice-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.restore-notice-text {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.restore-notice-btn {
+  flex-shrink: 0;
+  text-decoration: none;
+}
+
 /* ---------- 空狀態 ---------- */
 
 .empty-hint {
@@ -944,72 +998,166 @@ input[type="range"] {
   color: var(--text-tertiary);
 }
 
-/* ---------- 設定：沉浸時數維護 ---------- */
+/* ---------- 設定：帳號與雲端同步 ---------- */
+
+/* Google 登入按鈕照 Google 的規範：淺色是白底灰框、深色是深灰底，標誌維持原色 */
+.google-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px 9px 12px;
+  border: 1px solid #747775;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1f1f1f;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.google-btn svg {
+  width: 20px;
+  height: 20px;
+}
+.google-btn:hover:not(:disabled) {
+  background: #f2f2f2;
+}
+.google-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+html[data-theme="dark"] .google-btn {
+  border-color: #8e918f;
+  background: #131314;
+  color: #e3e3e3;
+}
+html[data-theme="dark"] .google-btn:hover:not(:disabled) {
+  background: #1e1f20;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0 14px;
+}
+.account-avatar {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--card-border);
+}
+.account-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary-bg);
+  color: var(--primary-text);
+  font-weight: 700;
+  font-size: 18px;
+}
+.account-id {
+  min-width: 0;
+  flex: 1;
+}
+.account-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-email {
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-badge {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--emerald-bg);
+  color: var(--emerald-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.account-help {
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.account-help summary {
+  cursor: pointer;
+}
+.account-redirect {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background: var(--hairline);
+  text-align: left;
+  user-select: all; /* 點一下就全選，方便複製 */
+}
+#accountMessage:not(:empty) {
+  margin-top: 10px;
+}
+
+/* ---------- 設定：資料備份 ---------- */
 
 .data-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 0;
-  flex-wrap: wrap;
+  padding: 10px 0;
 }
 .data-row + .data-row {
   border-top: 1px solid var(--hairline);
 }
 .data-label {
+  flex-shrink: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--text-strong);
 }
 .data-sub {
-  margin-left: 8px;
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-.data-value {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-}
-
-.data-block {
-  margin-top: 20px;
-  padding-top: 18px;
-  border-top: 1px solid var(--card-border);
-}
-.data-block-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-strong);
-  margin-bottom: 4px;
-}
-
-.data-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.data-inline input[type="number"] {
-  width: 74px;
-  padding: 9px 10px;
-  border: 1px solid var(--card-border);
-  border-radius: 8px;
-  background: var(--card-bg);
-  color: var(--text-primary);
-  font-size: 14px;
-  font-family: inherit;
-  font-variant-numeric: tabular-nums;
-}
-.data-inline input[type="number"]:focus {
-  outline: none;
-  border-color: var(--primary);
-}
-.data-unit {
   font-size: 13px;
   color: var(--text-secondary);
+  text-align: right;
+}
+.data-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+/* 完整路徑很長，允許在任何字元處換行，不要把卡片撐破 */
+.data-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.data-error {
+  color: var(--red-text);
+}
+
+.data-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+#backupMessage:not(:empty) {
+  margin-top: 10px;
 }
 
 .data-btn {
@@ -1020,11 +1168,11 @@ input[type="range"] {
   cursor: pointer;
   font-family: inherit;
   border: 1px solid var(--card-border);
-  background: var(--card-bg);
+  background: var(--btn-bg);
   color: var(--text-primary);
 }
 .data-btn:hover:not(:disabled) {
-  background: var(--hairline);
+  background: var(--btn-hover-bg);
 }
 .data-btn:disabled {
   opacity: 0.5;
@@ -1032,20 +1180,11 @@ input[type="range"] {
 }
 .data-btn-primary {
   border-color: transparent;
-  background: var(--primary);
+  background: var(--btn-primary-bg);
   color: #fff;
 }
 .data-btn-primary:hover:not(:disabled) {
-  filter: brightness(0.94);
-}
-/* 刪除是破壞性動作，平常低調、滑上去才轉紅 */
-.data-btn-danger:hover:not(:disabled) {
-  border-color: #ef4444;
-  background: rgba(239, 68, 68, 0.08);
-  color: #ef4444;
-}
-.data-suspicious .data-value {
-  color: #b45309;
+  background: var(--btn-primary-hover-bg);
 }
 
 .theme-toggle-row {

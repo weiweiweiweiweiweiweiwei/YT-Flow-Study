@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>FlowStudy 雲端同步測試</title>
+<style>
+ body{font-family:"Segoe UI","Microsoft JhengHei",sans-serif;margin:24px;background:#fff;color:#111}
+ pre{background:#f6f7f9;padding:16px;border-radius:8px;white-space:pre-wrap;line-height:1.55;font-size:13px}
+ .hint{color:#666;font-size:13px}
+</style>
+</head>
+<body>
+<h1>FlowStudy 雲端同步測試</h1>
+<p class="hint">
+  用真實的 IndexedDB 跑 core/cloud/sync.js，雲端換成記憶體裡的假 Supabase（行為比照 PostgREST：
+  依 updated_at 排序分頁、upsert 時由伺服器蓋時間戳、jsonb 會打亂物件 key 的順序）。
+  <b>需要用本機伺服器開啟</b>。
+</p>
+<pre id="out">執行中…</pre>
+
+<script type="module">
+// 這個測試會刪掉整個 flowstudy 資料庫，不能在擴充功能自己的網址下執行（會清掉真實資料）
+if (location.protocol === "chrome-extension:") {
+  document.body.innerHTML =
+    '<h1 style="font:600 20px sans-serif;color:#b91c1c">已停止：這個測試會清空學習資料庫</h1>' +
+    '<p style="font:14px sans-serif">請用本機伺服器開啟測試頁，不要在擴充功能的網址下執行。</p>';
+  throw new Error("拒絕在擴充功能的 origin 執行會清空資料庫的測試");
+}
+
+const lines = [];
+let pass = 0, fail = 0;
+const check = (n, c, d) => {
+  if (c) { pass++; lines.push("  ✓ " + n); }
+  else { fail++; lines.push("  ✗ " + n + (d !== undefined ? "\n      → " + d : "")); }
+};
+const section = (t) => lines.push("\n" + t);
+const render = () => {
+  lines.push("\n" + "=".repeat(52));
+  lines.push(`通過 ${pass} 項，失敗 ${fail} 項`);
+  lines.push("=".repeat(52));
+  document.getElementById("out").textContent = lines.join("\n");
+  document.title = fail === 0 ? "ALL PASS" : ("FAIL " + fail);
+};
+
+const memStore = {};
+globalThis.chrome = {
+  storage: {
+    local: {
+      get(keys, cb) {
+        let o = {};
+        if (keys == null) o = { ...memStore };
+        else if (typeof keys === "string") { if (memStore[keys] !== undefined) o[keys] = memStore[keys]; }
+        else if (Array.isArray(keys)) keys.forEach(k => { if (memStore[k] !== undefined) o[k] = memStore[k]; });
+        if (cb) cb(o); return Promise.resolve(o);
+      },
+      set(o, cb) { Object.assign(memStore, o); if (cb) cb(); return Promise.resolve(); },
+      remove(k, cb) { (Array.isArray(k) ? k : [k]).forEach(x => delete memStore[x]); if (cb) cb(); return Promise.resolve(); },
+    },
+    onChanged: { addListener() {}, removeListener() {} },
+  },
+  runtime: { lastError: null },
+};
+
+// ---------- 假的 Supabase ----------
+// jsonb 不保留 key 的順序。這裡刻意把 key 反過來排，確保同步靠的不是「剛好順序一樣」
+function jsonbRoundTrip(value) {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(jsonbRoundTrip);
+  const out = {};
+  for (const k of Object.keys(value).reverse()) if (value[k] !== undefined) out[k] = jsonbRoundTrip(value[k]);
+  return out;
+}
+
+function createFakeCloud() {
+  const rows = new Map();
+  let clock = Date.parse("2026-09-26T00:00:00Z");
+  let failNextPush = false;
+  // 每寫一列時間往前走 1 分鐘：同步引擎拉取時會往回重疊 2 分鐘，這樣最近寫入的幾列
+  // 會被重複拉到——正好用來驗證「重複拉到」不會造成任何副作用
+  const stamp = () => new Date(clock += 60 * 1000).toISOString();
+  const api = {
+    pullCalls: 0,
+    async pull(cursor, limit) {
+      api.pullCalls++;
+      return [...rows.values()]
+        .filter(r => !cursor || r.updated_at >= cursor)
+        .sort((a, b) => a.updated_at < b.updated_at ? -1 : a.updated_at > b.updated_at ? 1 : a.record_id < b.record_id ? -1 : 1)
+        .slice(0, limit)
+        .map(r => JSON.parse(JSON.stringify(r)));
+    },
+    async push(batch) {
+      if (failNextPush) { failNextPush = false; throw new Error("模擬網路中斷"); }
+      for (const r of batch) {
+        rows.set(`${r.store}/${r.record_id}`, {
+          store: r.store, record_id: r.record_id, deleted: !!r.deleted,
+          data: jsonbRoundTrip(JSON.parse(JSON.stringify(r.data))), updated_at: stamp(),
+        });
+      }
+    },
+  };
+  return {
+    api, rows,
+    get: (store, id) => rows.get(`${store}/${id}`),
+    live: (store) => [...rows.values()].filter(r => r.store === store && !r.deleted),
+    failNextPush() { failNextPush = true; },
+  };
+}
+
+async function wipeDatabase() {
+  await new Promise((resolve) => {
+    const req = indexedDB.deleteDatabase("flowstudy");
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  });
+}
+
+async function run() {
+  await wipeDatabase();
+  const S = await import("./core/cloud/sync.js");
+  const D = await import("./core/storage/db.js");
+  const V = await import("./core/storage/vocabularyStore.js");
+  const I = await import("./core/storage/immersionStore.js");
+  const O = await import("./core/storage/occurrenceStore.js");
+  const { STORES } = D;
+  const USER = "user-aaaa";
+
+  section("0. 指紋");
+  check("key 順序不同、內容相同 → 指紋相同",
+    S.fingerprint({ a: 1, b: { c: [1, 2], d: "x" } }) === S.fingerprint({ b: { d: "x", c: [1, 2] }, a: 1 }));
+  check("內容不同 → 指紋不同", S.fingerprint({ a: 1 }) !== S.fingerprint({ a: 2 }));
+  check("undefined 欄位不影響指紋（跟 JSON 一樣略過）",
+    S.fingerprint({ a: 1, b: undefined }) === S.fingerprint({ a: 1 }));
+
+  // ---------- 1. 第一次同步：全部推上去 ----------
+  section("1. 第一次登入：本機資料推上雲端");
+  const cloud = createFakeCloud();
+  const w1 = await V.saveWordFromSubtitle({ term: "resilient", translation: "有韌性的", videoId: "VID1",
+    videoTitle: "影片一", sentence: "Kids are resilient.", startTime: 10, endTime: 12 });
+  await V.saveWordFromSubtitle({ term: "cadence", translation: "節奏", videoId: "VID1",
+    videoTitle: "影片一", sentence: "Keep a steady cadence.", startTime: 30, endTime: 33 });
+  const sess = await I.startSession({ videoId: "VID1", videoTitle: "影片一" });
+  await I.addWatchedSeconds(sess.id, 1200);
+
+  const r1 = await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("2 個單字上了雲端", cloud.live(STORES.VOCABULARY).length === 2, cloud.live(STORES.VOCABULARY).length);
+  check("2 則例句上了雲端", cloud.live(STORES.OCCURRENCES).length === 2);
+  check("沉浸紀錄上了雲端（1200 秒）",
+    cloud.live(STORES.IMMERSION_SESSIONS).length === 1 && cloud.live(STORES.IMMERSION_SESSIONS)[0].data.watchedSeconds === 1200);
+  check("推送筆數 > 0", r1.pushed > 0, JSON.stringify(r1));
+
+  const r2 = await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("★ 沒有變動時再同步一次，一筆都不推（jsonb 打亂 key 順序也不會誤判）", r2.pushed === 0, JSON.stringify(r2));
+
+  // ---------- 2. 本機有變動 ----------
+  section("2. 本機繼續看影片 → 只推有變的那一筆");
+  await I.addWatchedSeconds(sess.id, 300);
+  const r3 = await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("只推 1 筆", r3.pushed === 1, JSON.stringify(r3));
+  check("雲端秒數更新為 1500", cloud.get(STORES.IMMERSION_SESSIONS, sess.id).data.watchedSeconds === 1500);
+
+  // ---------- 3. 擴充功能被移除重裝（整個資料庫連同步狀態一起消失）----------
+  section("3. ★ 擴充功能被移除後重裝：登入就全部拿回來");
+  await wipeDatabase();
+  check("（前提）本機確實是空的", (await V.getAllWords()).length === 0);
+  const r4 = await S.syncWithCloud({ userId: USER, api: cloud.api });
+  const words4 = await V.getAllWords();
+  check("★ 2 個單字回來了", words4.length === 2, words4.map(w => w.term).join(","));
+  check("★ 沉浸時數回來了（1500 秒）", (await I.getTotalSeconds()) === 1500, await I.getTotalSeconds());
+  const back = await V.findWordByTerm("resilient");
+  check("例句掛在正確的單字底下", back && (await O.getOccurrencesForWord(back.id)).length === 1);
+  check("拉回之後不需要再推任何東西", r4.pushed === 0, JSON.stringify(r4));
+  check("雲端一筆都沒被刪", cloud.live(STORES.VOCABULARY).length === 2);
+
+  // ---------- 4. 本機資料被清掉，但同步狀態還在 ----------
+  section("4. ★ 本機資料被清空、同步紀錄還在：不能把「清空」當成「刪除」同步上去");
+  for (let i = 0; i < 25; i++) {
+    await V.saveWordFromSubtitle({ term: "filler" + i, translation: "x", videoId: "VID2", videoTitle: "影片二",
+      sentence: "Filler sentence " + i + ".", startTime: i, endTime: i + 1 });
+  }
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  const cloudWordsBefore = cloud.live(STORES.VOCABULARY).length;
+  await D.clearLearningData(); // 只清學習資料，meta（同步狀態）留著——最危險的情況
+  const r5 = await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("★ 雲端單字一個都沒少", cloud.live(STORES.VOCABULARY).length === cloudWordsBefore,
+    `${cloudWordsBefore} → ${cloud.live(STORES.VOCABULARY).length}`);
+  check("★ 判定為資料遺失並從雲端救回", r5.recoveredFromLoss === true, JSON.stringify(r5));
+  check("本機單字全部回來", (await V.getAllWords()).length === cloudWordsBefore, (await V.getAllWords()).length);
+  check("沒有推送任何墓碑", r5.deleted === 0, r5.deleted);
+
+  // ---------- 5. 真的刪除一個字 ----------
+  section("5. 使用者刪掉一個字 → 雲端跟著刪，別台電腦也跟著刪");
+  const cad = await V.findWordByTerm("cadence");
+  await V.deleteWord(cad.id);
+  const r6 = await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("雲端那個字變成墓碑", cloud.get(STORES.VOCABULARY, cad.id)?.deleted === true);
+  check("它的例句也變成墓碑", cloud.rows.size > 0 &&
+    [...cloud.rows.values()].filter(r => r.store === STORES.OCCURRENCES && r.data?.vocabularyWordId === cad.id && !r.deleted).length === 0);
+  check("零星刪除不會被誤判為資料遺失", r6.recoveredFromLoss === false && r6.deleted >= 1, JSON.stringify(r6));
+  await wipeDatabase(); // 模擬另一台電腦
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("★ 另一台電腦登入後也沒有這個字", !(await V.findWordByTerm("cadence")));
+  check("其他字都在", !!(await V.findWordByTerm("resilient")) && !!(await V.findWordByTerm("filler3")));
+
+  section("5b. ★ 剛同步上去的字馬上刪掉：不會在下一次同步被拉回來");
+  const oops = await V.saveWordFromSubtitle({ term: "typo", translation: "打錯", videoId: "VID9", videoTitle: "影片九",
+    sentence: "A typo.", startTime: 1, endTime: 2 });
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("（前提）已經上了雲端", !!cloud.get(STORES.VOCABULARY, oops.word.id) && !cloud.get(STORES.VOCABULARY, oops.word.id).deleted);
+  await V.deleteWord(oops.word.id);
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("★ 本機沒有被拉回來", !(await V.findWordByTerm("typo")));
+  check("★ 雲端變成墓碑", cloud.get(STORES.VOCABULARY, oops.word.id)?.deleted === true);
+
+  // ---------- 6. 兩台電腦收藏了同一個字 ----------
+  section("6. 兩台電腦各自收藏同一個字：留建立時間早的那筆，例句不會掉");
+  const remoteWord = {
+    id: "remote-run-id", term: "run", normalizedTerm: "run", language: "en", translation: "跑（另一台）",
+    createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", state: "new",
+    dueAt: "2026-01-01T00:00:00.000Z", reviewCount: 0,
+  };
+  const localRun = await V.saveWordFromSubtitle({ term: "run", translation: "跑（這台）", videoId: "VID3",
+    videoTitle: "影片三", sentence: "I run every day.", startTime: 5, endTime: 7 });
+  await cloud.api.push([{ store: STORES.VOCABULARY, record_id: remoteWord.id, data: remoteWord, deleted: false }]);
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  const runs = (await V.getAllWords()).filter(w => w.normalizedTerm === "run");
+  check("本機只剩一筆 run", runs.length === 1, runs.map(w => w.id).join(","));
+  check("★ 留下的是建立時間早的那筆（另一台的）", runs[0] && runs[0].id === "remote-run-id", runs[0] && runs[0].id);
+  const localRunId = localRun.word ? localRun.word.id : localRun.id;
+  check("★ 這台的例句改掛到留下的那筆", (await O.getOccurrencesForWord("remote-run-id")).length === 1);
+  check("輸掉的那筆不會出現在雲端", !cloud.live(STORES.VOCABULARY).some(r => r.record_id === localRunId), localRunId);
+  const occOnCloud = [...cloud.rows.values()].find(r => r.store === STORES.OCCURRENCES && r.data?.sentence === "I run every day.");
+  check("雲端上的例句也改掛好了", occOnCloud && occOnCloud.data.vocabularyWordId === "remote-run-id",
+    occOnCloud && occOnCloud.data.vocabularyWordId);
+  const r7 = await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("再同步一次就穩定了（不會來回拉鋸）", r7.pushed === 0, JSON.stringify(r7));
+
+  // ---------- 7. 別台電腦改過的資料 ----------
+  section("7. 別台電腦的變動會被拉下來");
+  const res = await V.findWordByTerm("resilient");
+  await cloud.api.push([{ store: STORES.VOCABULARY, record_id: res.id, deleted: false,
+    data: { ...res, translation: "能迅速恢復的", updatedAt: new Date(Date.now() + 60000).toISOString() } }]);
+  const sessOnCloud = cloud.get(STORES.IMMERSION_SESSIONS, sess.id).data;
+  await cloud.api.push([{ store: STORES.IMMERSION_SESSIONS, record_id: sess.id, deleted: false,
+    data: { ...sessOnCloud, watchedSeconds: 9999 } }]);
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("較新的單字修改被套用", (await V.findWordByTerm("resilient")).translation === "能迅速恢復的");
+  check("沉浸紀錄取秒數多的", (await I.getSession(sess.id)).watchedSeconds === 9999);
+  await cloud.api.push([{ store: STORES.IMMERSION_SESSIONS, record_id: sess.id, deleted: false,
+    data: { ...sessOnCloud, watchedSeconds: 10 } }]);
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("★ 雲端秒數比較少時，本機不會倒退", (await I.getSession(sess.id)).watchedSeconds === 9999);
+  check("而且會把正確的秒數推回雲端", cloud.get(STORES.IMMERSION_SESSIONS, sess.id).data.watchedSeconds === 9999);
+
+  // ---------- 8. 網路中斷 ----------
+  section("8. 推送到一半網路中斷：下次同步自動補上");
+  await V.saveWordFromSubtitle({ term: "offline", translation: "離線", videoId: "VID4", videoTitle: "影片四",
+    sentence: "Works offline.", startTime: 1, endTime: 2 });
+  cloud.failNextPush();
+  let threw = false;
+  try { await S.syncWithCloud({ userId: USER, api: cloud.api }); } catch (e) { threw = true; }
+  check("同步回報失敗", threw);
+  check("（前提）雲端還沒有這個字", !cloud.live(STORES.VOCABULARY).some(r => r.data.term === "offline"));
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  check("★ 下一次同步補上了", cloud.live(STORES.VOCABULARY).some(r => r.data.term === "offline"));
+
+  // ---------- 9. 分頁 ----------
+  section("9. 資料很多時分頁拉取不漏資料");
+  const many = [];
+  for (let i = 0; i < 1234; i++) {
+    many.push({ store: STORES.OCCURRENCES, record_id: "bulk-" + i, deleted: false,
+      data: { id: "bulk-" + i, vocabularyWordId: "remote-run-id", videoId: "VIDX", sentence: "s" + i,
+              startTime: i, endTime: i + 1, createdAt: "2026-02-01T00:00:00.000Z" } });
+  }
+  await cloud.api.push(many);
+  await wipeDatabase();
+  await S.syncWithCloud({ userId: USER, api: cloud.api });
+  const occ = await O.getAllOccurrences();
+  check("★ 1234 筆全部拉回來（超過一頁 500 筆）", occ.filter(o => o.id.startsWith("bulk-")).length === 1234,
+    occ.filter(o => o.id.startsWith("bulk-")).length);
+
+  // ---------- 10. 換帳號 ----------
+  section("10. 不同帳號的同步狀態互不干擾");
+  const other = createFakeCloud();
+  await S.syncWithCloud({ userId: "user-bbbb", api: other.api });
+  check("換一個帳號登入，會把本機資料推到那個帳號（而不是以為都同步過了）",
+    other.live(STORES.VOCABULARY).length === (await V.getAllWords()).length,
+    `${other.live(STORES.VOCABULARY).length} / ${(await V.getAllWords()).length}`);
+
+  render();
+}
+
+run().catch((err) => {
+  lines.push("\n執行時發生例外：" + (err && err.stack ? err.stack : err));
+  render();
+});
+</script>
+</body>
+</html>

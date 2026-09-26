@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "FlowStudy",
-  "version": "1.0",
+  "version": "1.1",
   "description": "在 YouTube 字幕上點字或選取片語，即時顯示翻譯並自動儲存",
-  "permissions": ["storage", "activeTab", "tabs"],
+  "permissions": ["storage", "activeTab", "tabs", "alarms", "downloads", "downloads.ui", "offscreen", "identity"],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://translate.googleapis.com/*",
-    "https://translate.google.com/*"
+    "https://translate.google.com/*",
+    "https://algdqnztwyrcxuxqnzyp.supabase.co/*"
   ],
   "background": {
     "service_worker": "background.js",

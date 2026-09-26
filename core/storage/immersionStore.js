@@ -13,7 +13,7 @@
 // 暫停時呼叫端會停止累加，session 的 watchedSeconds 就停在那裡。
 // ============================================================================
 
-import { STORES, withStore, getAll, getById, put, remove, iterateIndex } from "./db.js";
+import { STORES, withStore, getAll, getById, put, iterateIndex } from "./db.js";
 import { createImmersionSession, nowIso, toLocalDateKey } from "../models.js";
 
 function promisify(request) {
@@ -122,76 +122,6 @@ export async function getTodaySeconds(now = new Date()) {
     return key > todayKey; // 由新到舊走訪，掃過今天就可以停
   });
   return total;
-}
-
-export async function deleteSession(id) {
-  return remove(STORES.IMMERSION_SESSIONS, id);
-}
-
-// 依「每一天」彙總，找出異常的紀錄讓使用者檢查。
-// 影片放著整夜沒關、或瀏覽器當掉留下沒結束的 session，都可能灌出離譜的單日時數。
-export async function getDailyBreakdown() {
-  const all = await getAllSessions();
-  const byDate = new Map();
-  for (const s of all) {
-    const key = toLocalDateKey(s.startedAt);
-    if (!key) continue;
-    if (!byDate.has(key)) byDate.set(key, { date: key, seconds: 0, sessions: [] });
-    const day = byDate.get(key);
-    day.seconds += s.watchedSeconds || 0;
-    day.sessions.push(s);
-  }
-  return Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
-}
-
-// 從別的工具帶過來的既有時數。用單一一筆標記來源的 session 表示，
-// 想改數字就改這一筆，不必去動任何真實記錄到的觀看紀錄。
-export const LEGACY_SOURCE = "legacy-zerostudy";
-
-export async function getLegacySession() {
-  const all = await getAllSessions();
-  return all.find((s) => s.source === LEGACY_SOURCE) || null;
-}
-
-/**
- * 設定「帶入的既有時數」。
- *
- * 日期刻意放在所有真實紀錄之前，這樣它會計進總時數，
- * 但不會在首頁「最近 7 天」的長條圖裡冒出一根柱子。
- */
-export async function setLegacySeconds(seconds) {
-  const existing = await getLegacySession();
-
-  if (seconds <= 0) {
-    if (existing) await deleteSession(existing.id);
-    return null;
-  }
-
-  if (existing) {
-    existing.watchedSeconds = Math.round(seconds);
-    await put(STORES.IMMERSION_SESSIONS, existing);
-    return existing;
-  }
-
-  const all = await getAllSessions();
-  let earliest = null;
-  for (const s of all) {
-    if (!earliest || String(s.startedAt) < String(earliest)) earliest = s.startedAt;
-  }
-  const anchor = earliest ? new Date(earliest) : new Date();
-  anchor.setDate(anchor.getDate() - 1);
-  anchor.setHours(12, 0, 0, 0);
-
-  const session = createImmersionSession({
-    videoId: "",
-    videoTitle: "",
-    startedAt: anchor.toISOString(),
-    source: LEGACY_SOURCE,
-  });
-  session.watchedSeconds = Math.round(seconds);
-  session.endedAt = anchor.toISOString();
-  await put(STORES.IMMERSION_SESSIONS, session);
-  return session;
 }
 
 // 最早一筆沉浸紀錄的時間 = 使用者「開始學習的那一天」。

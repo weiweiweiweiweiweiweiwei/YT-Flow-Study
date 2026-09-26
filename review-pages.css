@@ -163,8 +163,8 @@
 }
 /* 垃圾桶預設低調，滑上去才轉紅——這是破壞性動作，不該一直搶注意力 */
 .mem-delete:hover {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
+  background: var(--red-bg);
+  color: var(--red-text);
 }
 
 .mem-card-body {
@@ -296,7 +296,7 @@
   padding: 13px 32px;
   border: none;
   border-radius: 12px;
-  background: var(--primary);
+  background: var(--primary-fill);
   color: #fff;
   font-size: 15px;
   font-weight: 700;

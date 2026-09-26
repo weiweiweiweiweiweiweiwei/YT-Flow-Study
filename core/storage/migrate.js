@@ -124,57 +124,33 @@ export async function runMigrationIfNeeded() {
   return result;
 }
 
-// ---------- 從 zeroStudy 帶過來的既有時數 ----------
+// ---------- 移除從 zeroStudy 帶入的時數 ----------
 //
-// 使用者在改用這個擴充功能之前，已經在 zeroStudy 累積了 10 小時。
-// 那是真實發生過的學習時間，不該因為換工具就歸零。
-//
-// 刻意做成一筆「標記來源的 ImmersionSession」而不是直接調整某個總數：
-//   - 資料是誠實的：分析頁看得出這 10 小時的來源是匯入，不是本工具記錄的
-//   - 可以回溯：哪天想拿掉，刪掉這一筆就好，不必猜哪個數字被動過手腳
-//   - 只會執行一次（用 meta 旗標鎖住），不會每次啟動都加 10 小時
-// 使用者在 zeroStudy 累積的時數。之後可以在「設定 → 沉浸時數維護」裡自行調整，
-// 這裡只是第一次啟動時的初始值。
-const LEGACY_HOURS_FLAG = "migration:zerostudy-legacy-hours";
-const LEGACY_HOURS = 10;
-const LEGACY_MINUTES = 4;
+// 早期版本啟動時會自動塞一筆 10 小時 4 分、source = "legacy-zerostudy" 的沉浸紀錄，
+// 代表改用這個工具之前在 zeroStudy 累積的時數。使用者決定不把它算進總時數，
+// 這裡把它刪掉——只刪這個來源的紀錄，真實記錄到的觀看一筆都不碰。只執行一次。
+export const ZEROSTUDY_SOURCE = "legacy-zerostudy";
+const REMOVE_ZEROSTUDY_FLAG = "cleanup:remove-zerostudy-hours";
 
-export async function importLegacyHoursIfNeeded() {
-  const done = await getMeta(LEGACY_HOURS_FLAG, false);
+export async function removeZeroStudyHoursIfNeeded() {
+  const done = await getMeta(REMOVE_ZEROSTUDY_FLAG, false);
   if (done) return { skipped: true };
 
-  // 放在「最早一筆現有紀錄的前一天」，時間軸上排在所有本工具的紀錄之前
-  let earliest = null;
-  await withStore(STORES.IMMERSION_SESSIONS, "readonly", async (store) => {
+  const removed = await withStore(STORES.IMMERSION_SESSIONS, "readwrite", async (store) => {
     const all = await promisify(store.getAll());
-    for (const s of all) {
-      if (!earliest || String(s.startedAt) < String(earliest)) earliest = s.startedAt;
+    let count = 0;
+    let seconds = 0;
+    for (const session of all) {
+      if (session.source !== ZEROSTUDY_SOURCE) continue;
+      await promisify(store.delete(session.id));
+      count++;
+      seconds += session.watchedSeconds || 0;
     }
+    return { count, seconds };
   });
 
-  const anchor = earliest ? new Date(earliest) : new Date();
-  anchor.setDate(anchor.getDate() - 1);
-  anchor.setHours(12, 0, 0, 0);
-
-  const session = createImmersionSession({
-    videoId: "",
-    videoTitle: "",
-    startedAt: anchor.toISOString(),
-    source: "legacy-zerostudy",
-  });
-  session.watchedSeconds = LEGACY_HOURS * 3600 + LEGACY_MINUTES * 60;
-  session.endedAt = anchor.toISOString();
-
-  await withStore(STORES.IMMERSION_SESSIONS, "readwrite", async (store) => {
-    await promisify(store.add(session));
-  });
-
-  await setMeta(LEGACY_HOURS_FLAG, {
-    completedAt: new Date().toISOString(),
-    hours: LEGACY_HOURS,
-    minutes: LEGACY_MINUTES,
-  });
-  return { skipped: false, hours: LEGACY_HOURS, minutes: LEGACY_MINUTES };
+  await setMeta(REMOVE_ZEROSTUDY_FLAG, { completedAt: new Date().toISOString(), ...removed });
+  return { skipped: false, ...removed };
 }
 
 // 設定頁的「清除舊格式資料」用。等使用者確認搬移沒問題之後才會執行，

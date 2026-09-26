@@ -25,8 +25,11 @@ import {
   getTodaySeconds,
 } from "./core/storage/immersionStore.js";
 import { upsertVideo } from "./core/storage/videoStore.js";
-import { runMigrationIfNeeded, importLegacyHoursIfNeeded } from "./core/storage/migrate.js";
+import { runMigrationIfNeeded, removeZeroStudyHoursIfNeeded } from "./core/storage/migrate.js";
 import { lookupWord } from "./core/dictionary/lookup.js";
+import { initAutoBackup, runBackup, getBackupStatus } from "./auto-backup.js";
+import { signInWithGoogle, signOut, getCurrentUser, getRedirectUrl } from "./core/cloud/auth.js";
+import { initCloudSync, runCloudSync, scheduleCloudSync, getSyncStatus, clearSyncStatus } from "./cloud-sync.js";
 
 // chrome.storage.session 預設只有 extension 頁面（background/popup）能存取，
 // content script 拿不到。這裡把存取範圍打開，讓 content.js 也能直接讀寫，
@@ -50,13 +53,13 @@ async function bootstrap() {
   }
 
   try {
-    // 把轉用這個工具之前，在 zeroStudy 累積的時數帶進來（只會執行一次）
-    const legacy = await importLegacyHoursIfNeeded();
-    if (!legacy.skipped) {
-      console.log(`[FlowStudy] 已帶入先前累積的 ${legacy.hours} 小時 ${legacy.minutes} 分沉浸時數`);
+    // 使用者決定不把 zeroStudy 帶入的 10 小時 4 分算進總時數（只會執行一次）
+    const removed = await removeZeroStudyHoursIfNeeded();
+    if (!removed.skipped && removed.count) {
+      console.log(`[FlowStudy] 已移除從 zeroStudy 帶入的 ${Math.round(removed.seconds / 60)} 分鐘沉浸時數`);
     }
   } catch (err) {
-    console.warn("[FlowStudy] 帶入既有時數失敗：", err);
+    console.warn("[FlowStudy] 移除 zeroStudy 時數失敗（下次啟動會重試）：", err);
   }
 
   try {
@@ -69,11 +72,23 @@ async function bootstrap() {
 
   // 搬移完成後重建一次索引，讓舊資料搬進來的單字也能在字幕上畫底線
   await syncMarkedTermsIndex();
+
+  // 有登入的話，啟動時跟雲端對一次帳（沒登入會直接跳過）
+  scheduleCloudSync(5000);
 }
 
-chrome.runtime.onInstalled.addListener(bootstrap);
+chrome.runtime.onInstalled.addListener(async (details) => {
+  await bootstrap();
+  // 每次改完程式碼按 ⟳ 重新載入，Chrome 都會送出 reason = "update"。
+  // 這是最該留一份備份的時間點：接下來跑的是新版程式碼。
+  // （資料跟上一份備份一模一樣時 runBackup 會自己跳過，不會重複寫檔）
+  runBackup({ reason: details.reason }).catch(() => {});
+});
 chrome.runtime.onStartup.addListener(bootstrap);
 bootstrap(); // service worker 被喚醒時也跑一次（runMigrationIfNeeded 本身會判斷是否已搬過）
+initAutoBackup();
+// 從雲端拉回單字之後，字幕上的底線也要跟著更新
+initCloudSync({ onDataChanged: () => syncMarkedTermsIndex() });
 
 // ---------- 已收藏單字的索引（給 content.js 畫底線用）----------
 //
@@ -109,14 +124,22 @@ const HANDLERS = {
   "vocab:save": async (msg) => {
     const result = await saveWordFromSubtitle(msg.payload);
     await syncMarkedTermsIndex(); // 立刻讓字幕上的底線反映新收藏
+    scheduleCloudSync();
     return result;
   },
   // 單字頁刪除／編輯單字後呼叫，讓 YouTube 分頁的底線同步更新
-  "vocab:syncIndex": () => syncMarkedTermsIndex(),
+  "vocab:syncIndex": () => {
+    scheduleCloudSync(); // 刪改單字是在頁面裡直接寫資料庫的，這是背景唯一知道「有變動」的時機
+    return syncMarkedTermsIndex();
+  },
 
   "immersion:start": (msg) => startSession(msg.payload),
   "immersion:tick": (msg) => addWatchedSeconds(msg.payload.sessionId, msg.payload.deltaSeconds),
-  "immersion:end": (msg) => endSession(msg.payload.sessionId),
+  "immersion:end": async (msg) => {
+    const result = await endSession(msg.payload.sessionId);
+    scheduleCloudSync();
+    return result;
+  },
   // 工具列小面板要顯示今天沉浸了幾分鐘。它碰不到 IndexedDB，一樣得問背景。
   "immersion:today": () => getTodaySeconds(),
 
@@ -128,6 +151,28 @@ const HANDLERS = {
 
   // 詞彙庫的單字詳細頁。查詢結果會存進 IndexedDB，第二次開同一個字是瞬間顯示。
   "dict:lookup": (msg) => lookupWord(msg.payload.term),
+
+  // 設定頁的「資料備份」卡片
+  "backup:status": () => getBackupStatus(),
+  "backup:now": () => runBackup({ reason: "manual", force: true }),
+
+  // 設定頁的「帳號與雲端同步」卡片
+  "auth:status": async () => ({
+    user: await getCurrentUser(),
+    sync: await getSyncStatus(),
+    redirectUrl: getRedirectUrl(),
+  }),
+  "auth:signIn": async () => {
+    const user = await signInWithGoogle();
+    const sync = await runCloudSync({ reason: "sign-in" }); // 新電腦登入：資料當場拉回來
+    return { user, sync };
+  },
+  "auth:signOut": async () => {
+    await signOut();
+    await clearSyncStatus();
+    return { user: null };
+  },
+  "sync:now": () => runCloudSync({ reason: "manual" }),
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

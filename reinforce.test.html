@@ -21,6 +21,16 @@
 <div id="stage"></div>
 
 <script type="module">
+// 這個測試一開始就會刪掉整個 flowstudy 資料庫。如果在擴充功能自己的網址下開啟
+// （chrome-extension://…/xxx.test.html），刪到的就是真正的學習資料——所以直接拒絕執行。
+// 測試請用本機伺服器開（http://127.0.0.1:…），那是另一個 origin，資料庫互不相干。
+if (location.protocol === "chrome-extension:") {
+  document.body.innerHTML =
+    '<h1 style="font:600 20px sans-serif;color:#b91c1c">已停止：這個測試會清空學習資料庫</h1>' +
+    '<p style="font:14px sans-serif">請用本機伺服器開啟測試頁，不要在擴充功能的網址下執行。</p>';
+  throw new Error("拒絕在擴充功能的 origin 執行會清空資料庫的測試");
+}
+
 const lines = [];
 let pass = 0, fail = 0;
 const check = (n, c, d) => {

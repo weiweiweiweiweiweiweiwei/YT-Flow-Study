@@ -15,6 +15,16 @@
 <pre id="report">執行中…</pre>
 
 <script type="module">
+// 這個測試一開始就會刪掉整個 flowstudy 資料庫。如果在擴充功能自己的網址下開啟
+// （chrome-extension://…/xxx.test.html），刪到的就是真正的學習資料——所以直接拒絕執行。
+// 測試請用本機伺服器開（http://127.0.0.1:…），那是另一個 origin，資料庫互不相干。
+if (location.protocol === "chrome-extension:") {
+  document.body.innerHTML =
+    '<h1 style="font:600 20px sans-serif;color:#b91c1c">已停止：這個測試會清空學習資料庫</h1>' +
+    '<p style="font:14px sans-serif">請用本機伺服器開啟測試頁，不要在擴充功能的網址下執行。</p>';
+  throw new Error("拒絕在擴充功能的 origin 執行會清空資料庫的測試");
+}
+
 const lines = [];
 let pass = 0, fail = 0;
 const check = (n, c, d) => {
@@ -444,7 +454,7 @@ const txt = () => $(".content-inner").textContent.replace(/\s+/g, " ");
       `${cardsBefore} → ${$$(".mem-video-card").length}`);
   }
 
-  section("8. 設定");
+  section("10. 設定");
   $('[data-view="settings"]').click();
   await settle(400);
   const slider = $("#goalSlider");
@@ -459,85 +469,43 @@ const txt = () => $(".content-inner").textContent.replace(/\s+/g, " ");
   check("沒有訂閱 / 語言偏好 / 刪除帳戶",
     !txt().includes("訂閱") && !txt().includes("語言偏好") && !txt().includes("刪除帳戶"));
 
-  section("9. 沉浸時數維護");
+  section("11. 沉浸時數維護已移除，換成資料備份");
   {
-    const IM  = await import("./core/storage/immersionStore.js");
+    check("★ 沒有「沉浸時數維護」與「從其他工具帶入的時數」",
+      !txt().includes("沉浸時數維護") && !txt().includes("帶入的時數") && !$("#legacyH") && !$("#dataMaintenance"));
     const MIG = await import("./core/storage/migrate.js");
-    const { toLocalDateKey } = await import("./core/models.js");
+    check("★ 不再有自動帶入 zeroStudy 時數的程式", typeof MIG.importLegacyHoursIfNeeded === "undefined");
 
-    // ---- 從 zeroStudy 帶入的既有時數 ----
-    const imported = await MIG.importLegacyHoursIfNeeded();
-    check("首次啟動會帶入既有時數", imported.skipped === false, JSON.stringify(imported));
-    const legacy = await IM.getLegacySession();
-    check("★ 帶入的是 10 小時 4 分（不是 10 小時整）",
-      legacy && legacy.watchedSeconds === 10 * 3600 + 4 * 60, legacy && legacy.watchedSeconds);
-    check("再跑一次不會重複加", (await MIG.importLegacyHoursIfNeeded()).skipped === true);
-    check("★ 帶入的日期排在所有真實紀錄之前（才不會在 7 天長條圖裡冒出柱子）",
-      legacy.startedAt < (await IM.getAllSessions())
-        .filter(s => s.source !== IM.LEGACY_SOURCE)
-        .reduce((a, s) => a < s.startedAt ? a : s.startedAt, "9999"),
-      legacy.startedAt);
+    check("帳號與雲端同步排在設定頁第一張", $("#settingsView .card")?.id === "accountCard", $("#settingsView .card")?.id);
+    check("未登入時顯示「使用 Google 登入」", !!$("#signInBtn") && $("#signInBtn").textContent.includes("使用 Google 登入"));
+    check("Google 按鈕是圓角膠囊（有套到樣式）", getComputedStyle($("#signInBtn")).borderRadius === "999px",
+      getComputedStyle($("#signInBtn")).borderRadius);
 
-    // ---- 一筆離譜的紀錄（模擬影片整夜沒關）----
-    // 刻意放在 10 天前，落在 7 天長條圖視窗之外，才不會影響前面的等比例測試
-    const bogusDay = new Date(); bogusDay.setDate(bogusDay.getDate() - 10); bogusDay.setHours(3, 0, 0, 0);
-    const bogusKey = toLocalDateKey(bogusDay);
-    const bogus = createImmersionSession({ videoId: "VIDA", videoTitle: "影片 A", startedAt: bogusDay.toISOString() });
-    bogus.watchedSeconds = 20 * 3600; bogus.endedAt = bogusDay.toISOString();
-    await put(STORES.IMMERSION_SESSIONS, bogus);
+    const card = $("#backupCard");
+    check("設定頁有資料備份卡片", !!card);
+    check("有「立即備份」與「從備份檔還原」兩顆按鈕", !!$("#backupNow") && !!$("#restoreBtn"));
+    check("還原只收 JSON 檔", ($("#restoreFile")?.accept || "").includes(".json"), $("#restoreFile")?.accept);
+    check("還沒備份過時照實顯示", card.textContent.includes("還沒有備份過"), card.textContent.trim().slice(0, 80));
+    check("按鈕樣式有套用（不是瀏覽器預設外觀）",
+      getComputedStyle($("#backupNow")).borderRadius === "8px", getComputedStyle($("#backupNow")).borderRadius);
+  }
 
-    // 重新進設定頁，讓維護區塊看到新資料
-    $('[data-view="home"]').click(); await settle(300);
-    $('[data-view="settings"]').click(); await settle(600);
-
-    const box = $("#dataMaintenance");
-    check("設定頁有沉浸時數維護區塊", !!box);
-    check("顯示目前總沉浸時數", /\d+ 小時 \d+ 分/.test(box.querySelector(".data-value")?.textContent || ""),
-      box.querySelector(".data-value")?.textContent);
-
-    check("帶入時數可直接編輯：小時欄 = 10", $("#legacyH")?.value === "10", $("#legacyH")?.value);
-    check("帶入時數可直接編輯：分鐘欄 = 4", $("#legacyM")?.value === "4", $("#legacyM")?.value);
-
-    check("★ 列出異常的那一天", !!box.querySelector(`[data-delete-date="${bogusKey}"]`), bogusKey);
-    check("異常那天顯示 20 小時", box.textContent.includes("20 小時 0 分"),
-      box.textContent.match(/\d+ 小時 \d+ 分/g)?.join(" / "));
-    check("正常的 50 分鐘那天不會被誤判為異常",
-      $$("[data-delete-date]").length === 1, $$("[data-delete-date]").map(b => b.dataset.deleteDate).join(","));
-
-    // ---- CSS 真的存在（不然維護區塊會是一片裸樣式）----
-    check("維護區塊的樣式有套用：按鈕不是瀏覽器預設外觀",
-      getComputedStyle($(".data-btn-primary")).borderRadius === "8px",
-      getComputedStyle($(".data-btn-primary")).borderRadius);
-    check("數字輸入框有固定寬度", getComputedStyle($("#legacyH")).width === "74px",
-      getComputedStyle($("#legacyH")).width);
-
-    // ---- 刪除異常紀錄 ----
-    const beforeTotal = await IM.getTotalSeconds();
-    globalThis.confirm = () => true;
-    box.querySelector(`[data-delete-date="${bogusKey}"]`).click();
-    await settle(600);
-    const afterTotal = await IM.getTotalSeconds();
-    check("★ 刪除後總時數正好少了 20 小時", beforeTotal - afterTotal === 20 * 3600,
-      `${beforeTotal} → ${afterTotal}`);
-    check("刪除後該列從清單消失", !$(`[data-delete-date="${bogusKey}"]`));
-    check("沒有異常紀錄時顯示提示文字", $("#dataMaintenance").textContent.includes("沒有發現異常"));
-
-    // ---- 手動改寫帶入的時數 ----
-    $("#legacyH").value = "12"; $("#legacyM").value = "30";
-    $("#saveLegacy").click();
-    await settle(600);
-    const after = await IM.getLegacySession();
-    check("★ 儲存後帶入時數變成 12 小時 30 分", after.watchedSeconds === 12 * 3600 + 30 * 60,
-      after.watchedSeconds);
-    check("改的是同一筆紀錄，不是又新增一筆",
-      (await IM.getAllSessions()).filter(s => s.source === IM.LEGACY_SOURCE).length === 1);
-    check("畫面上的輸入框跟著更新", $("#legacyH").value === "12" && $("#legacyM").value === "30",
-      `${$("#legacyH").value}:${$("#legacyM").value}`);
-
-    // ---- 總時數與長條圖同源：刪掉今天的紀錄，首頁必須跟著變 ----
-    const todaySessions = (await IM.getDailyBreakdown()).find(d => d.date === toLocalDateKey(new Date()));
-    check("今天有 18 分鐘的紀錄", todaySessions && todaySessions.seconds === 18 * 60,
-      todaySessions && todaySessions.seconds);
+  section("12. 深色主題 = GitHub 配色");
+  {
+    $('[data-theme-value="dark"]').click();
+    await settle(200);
+    const bg = (sel) => getComputedStyle($(sel)).backgroundColor;
+    check("切到深色", document.documentElement.getAttribute("data-theme") === "dark");
+    check("★ 內容區是 GitHub 的 #0d1117", bg("body") === "rgb(13, 17, 23)", bg("body"));
+    check("★ 側欄是 GitHub 頂欄的 #010409", bg(".sidebar") === "rgb(1, 4, 9)", bg(".sidebar"));
+    check("卡片框線是 #3d444d", getComputedStyle($("#backupCard")).borderTopColor === "rgb(61, 68, 77)",
+      getComputedStyle($("#backupCard")).borderTopColor);
+    check("主要文字是 #f0f6fc", getComputedStyle($(".page-title")).color === "rgb(240, 246, 252)",
+      getComputedStyle($(".page-title")).color);
+    check("主要按鈕是 GitHub 綠 #238636", bg("#backupNow") === "rgb(35, 134, 54)", bg("#backupNow"));
+    $('[data-theme-value="light"]').click();
+    await settle(200);
+    check("切回淺色後底色還原", bg("body") === "rgb(249, 250, 251)", bg("body"));
   }
 
   paint();

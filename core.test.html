@@ -19,6 +19,16 @@
 <pre id="out">執行中…</pre>
 
 <script type="module">
+// 這個測試一開始就會刪掉整個 flowstudy 資料庫。如果在擴充功能自己的網址下開啟
+// （chrome-extension://…/xxx.test.html），刪到的就是真正的學習資料——所以直接拒絕執行。
+// 測試請用本機伺服器開（http://127.0.0.1:…），那是另一個 origin，資料庫互不相干。
+if (location.protocol === "chrome-extension:") {
+  document.body.innerHTML =
+    '<h1 style="font:600 20px sans-serif;color:#b91c1c">已停止：這個測試會清空學習資料庫</h1>' +
+    '<p style="font:14px sans-serif">請用本機伺服器開啟測試頁，不要在擴充功能的網址下執行。</p>';
+  throw new Error("拒絕在擴充功能的 origin 執行會清空資料庫的測試");
+}
+
 const lines = [];
 let pass = 0, fail = 0;
 
@@ -543,6 +553,115 @@ async function run() {
   }
 
   function A_safe(fn) { try { fn(); return true; } catch (e) { lines.push("      例外：" + e.message); return false; } }
+
+  // ========== 13. 備份與還原 ==========
+  section("13. 備份與還原（資料被清掉之後救得回來）");
+  {
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase("flowstudy");
+      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    });
+    for (const k of Object.keys(memStore)) delete memStore[k];
+
+    const B = await import("./core/storage/backup.js?v=6");
+    const D = await import("./core/storage/db.js?v=6");
+    const V = await import("./core/storage/vocabularyStore.js?v=6");
+    const I = await import("./core/storage/immersionStore.js?v=6");
+    const O = await import("./core/storage/occurrenceStore.js?v=6");
+
+    check("空資料庫被判定為空（自動備份會跳過）",
+      B.isSummaryEmpty((await B.buildBackupSnapshot()).summary));
+
+    await V.saveWordFromSubtitle({ term: "resilient", translation: "有韌性的", videoId: "VID1",
+      videoTitle: "影片一", sentence: "Kids are resilient.", startTime: 10, endTime: 12 });
+    await V.saveWordFromSubtitle({ term: "cadence", translation: "節奏", videoId: "VID1",
+      videoTitle: "影片一", sentence: "Keep a steady cadence.", startTime: 30, endTime: 33 });
+    const s1 = await I.startSession({ videoId: "VID1", videoTitle: "影片一" });
+    await I.addWatchedSeconds(s1.id, 1500);
+    Object.assign(memStore, {
+      flowstudySettings: { dailyGoalMinutes: 45, theme: "dark" },
+      flowstudyCaptionScale: 120,
+      "tr:hello": "你好",
+      flowstudyMarkedTerms: ["resilient", "cadence"],
+      flowstudyBackupStatus: { at: "x" },
+    });
+
+    const snap = JSON.parse(JSON.stringify(await B.buildBackupSnapshot({ extensionVersion: "1.1" })));
+    check("快照標明是 FlowStudy 備份", snap.app === "FlowStudy" && snap.format === 1);
+    check("快照摘要：2 個單字、1 筆沉浸、1500 秒",
+      snap.summary.words === 2 && snap.summary.immersionSessions === 1 && snap.summary.immersionSeconds === 1500,
+      JSON.stringify(snap.summary));
+    check("例句也有備份", snap.summary.occurrences === 2, snap.summary.occurrences);
+    check("設定值有備份", snap.storageLocal.flowstudySettings?.dailyGoalMinutes === 45);
+    check("翻譯快取、底線索引、備份紀錄不放進備份",
+      !("tr:hello" in snap.storageLocal) && !("flowstudyMarkedTerms" in snap.storageLocal)
+        && !("flowstudyBackupStatus" in snap.storageLocal), Object.keys(snap.storageLocal).join(","));
+    check("不是空的", !B.isSummaryEmpty(snap.summary));
+
+    // ---- 模擬「資料不見了」：資料庫與 chrome.storage 全部清空 ----
+    await D.clearLearningData();
+    for (const k of Object.keys(memStore)) delete memStore[k];
+    check("清空後確實沒有單字", (await V.getAllWords()).length === 0);
+
+    const r1 = await B.restoreBackupSnapshot(snap);
+    check("★ 還原後 2 個單字回來了", (await V.getAllWords()).length === 2, JSON.stringify(r1));
+    check("★ 還原後沉浸時數回來了（1500 秒）", (await I.getTotalSeconds()) === 1500, await I.getTotalSeconds());
+    const resilient = await V.findWordByTerm("resilient");
+    check("例句掛回正確的單字", resilient && (await O.getOccurrencesForWord(resilient.id)).length === 1);
+    check("設定值也回來了", memStore.flowstudySettings?.dailyGoalMinutes === 45 && memStore.flowstudyCaptionScale === 120);
+
+    const r2 = await B.restoreBackupSnapshot(snap);
+    check("同一份備份還原第二次不會重複", r2.words === 0 && r2.immersionSessions === 0
+      && (await V.getAllWords()).length === 2 && (await I.getTotalSeconds()) === 1500, JSON.stringify(r2));
+
+    // ---- 還原是合併：備份之後的新資料不會被舊備份蓋掉 ----
+    await V.saveWordFromSubtitle({ term: "novel", translation: "新穎的", videoId: "VID2", videoTitle: "影片二",
+      sentence: "A novel idea.", startTime: 5, endTime: 7 });
+    await I.addWatchedSeconds(s1.id, 600); // 同一段觀看又多看了 10 分鐘
+    memStore.flowstudySettings = { dailyGoalMinutes: 60, theme: "light" };
+    await B.restoreBackupSnapshot(snap);
+    check("★ 備份之後新收藏的字還在", !!(await V.findWordByTerm("novel")));
+    check("★ 同一段觀看保留比較長的秒數（不會退回備份時的 1500）", (await I.getTotalSeconds()) === 2100,
+      await I.getTotalSeconds());
+    check("還原後改過的設定不會被舊備份蓋掉", memStore.flowstudySettings.dailyGoalMinutes === 60);
+
+    // ---- 同一個字、不同 id（重新安裝後又收藏過一次）----
+    await D.clearLearningData();
+    await V.saveWordFromSubtitle({ term: "Resilient", translation: "有彈性的", videoId: "VID9", videoTitle: "影片九",
+      sentence: "Be resilient.", startTime: 1, endTime: 2 });
+    const r3 = await B.restoreBackupSnapshot(snap);
+    const all = await V.getAllWords();
+    check("同一個字不會變成兩筆", all.filter(w => w.normalizedTerm === "resilient").length === 1,
+      all.map(w => w.term).join(","));
+    const kept = await V.findWordByTerm("resilient");
+    check("★ 備份裡的例句改掛到現有那筆單字底下（兩則例句都在）",
+      (await O.getOccurrencesForWord(kept.id)).length === 2, JSON.stringify(r3));
+
+    // ---- 從 zeroStudy 帶入的時數：刪掉之後，舊備份也不會把它帶回來 ----
+    const { createImmersionSession } = await import("./core/models.js");
+    const M = await import("./core/storage/migrate.js");
+    const legacy = createImmersionSession({ videoId: "", videoTitle: "", startedAt: "2026-01-01T12:00:00.000Z",
+      source: "legacy-zerostudy" });
+    legacy.watchedSeconds = 10 * 3600 + 4 * 60; legacy.endedAt = legacy.startedAt;
+    await D.put(D.STORES.IMMERSION_SESSIONS, legacy);
+    const withLegacy = await I.getTotalSeconds();
+    const snapWithLegacy = JSON.parse(JSON.stringify(await B.buildBackupSnapshot()));
+    const rm = await M.removeZeroStudyHoursIfNeeded();
+    check("★ 刪掉的正好是 10 小時 4 分", rm.count === 1 && rm.seconds === 36240, JSON.stringify(rm));
+    check("★ 總時數少了 10 小時 4 分，真實紀錄一筆不少", withLegacy - (await I.getTotalSeconds()) === 36240,
+      `${withLegacy} → ${await I.getTotalSeconds()}`);
+    check("只執行一次", (await M.removeZeroStudyHoursIfNeeded()).skipped === true);
+    await B.restoreBackupSnapshot(snapWithLegacy);
+    check("★ 拿刪除前的舊備份還原，不會把它帶回來",
+      !(await I.getAllSessions()).some(s => s.source === "legacy-zerostudy"));
+
+    // ---- 選錯檔案 ----
+    check("不是 FlowStudy 的檔案會被擋下", !!B.validateBackupSnapshot({ hello: 1 }));
+    check("格式版本比程式新的檔案會被擋下", !!B.validateBackupSnapshot({ ...snap, format: 99 }));
+    let threw = false;
+    try { await B.restoreBackupSnapshot({ app: "Other" }); } catch (e) { threw = true; }
+    check("還原錯誤的檔案會丟出錯誤，不會寫入任何東西", threw);
+  }
 
   render();
 }
