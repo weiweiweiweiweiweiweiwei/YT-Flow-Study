@@ -1193,6 +1193,17 @@ function renderImmersionButton() {
   btn.setAttribute("aria-label", isPaused ? "影片已暫停，未記錄" : "沉浸計時中");
 }
 
+// YouTube 播放器只在「視窗大小改變」時才重算 <video> 的尺寸。
+// 沉浸模式用 CSS 藏掉右側推薦欄、或退出全螢幕時，播放器外框的寬度變了，
+// 但視窗本身沒變，YouTube 不知道要重算——影片就卡在舊尺寸：
+// 關閉沉浸時影片比外框大、蓋到右欄；開啟時影片縮在左上角。以前只能重新整理才恢復。
+// 這裡補發 resize 事件，讓 YouTube 用它自己的邏輯重新排一次。
+// 發兩次：第一次在下一個畫面，第二次等全螢幕切換這類有過場的變化定案之後。
+function nudgeYouTubeLayout() {
+  requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
+  setTimeout(() => window.dispatchEvent(new Event("resize")), 400);
+}
+
 function onImmersionButtonClick() {
   immersionActive = !immersionActive;
   sessionSeconds = 0;
@@ -1210,6 +1221,7 @@ function onImmersionButtonClick() {
   });
 
   document.documentElement.classList.toggle("zerostudy-immersion-active", immersionActive);
+  nudgeYouTubeLayout(); // 推薦欄出現／消失，播放器寬度跟著變
   renderImmersionButton();
   // 沉浸模式是自繪字幕條的總開關，按下去要立刻反映，不要等下一次心跳
   applyCaptionOverlayMode();
@@ -1580,6 +1592,9 @@ function initImmersionTimer() {
       sessionSeconds = data.immersion_session_seconds || 0;
       lastCheckpointMinute = Math.floor(sessionSeconds / 60);
       document.documentElement.classList.add("zerostudy-immersion-active");
+      // 這裡是非同步讀回來的，YouTube 早就用「有推薦欄」的寬度排好播放器了，
+      // 重新整理後影片偏小、偏左就是這個原因
+      nudgeYouTubeLayout();
     }
     renderImmersionButton();
     // immersionActive 是非同步讀回來的，而字幕條的顯示取決於它。
@@ -1597,6 +1612,12 @@ function initImmersionTimer() {
     // 會跟它自己的版面邏輯打架、跑版。全螢幕時交給 YouTube 自己的全螢幕
     // 版面處理就好，我們只在「一般（非全螢幕）模式」隱藏推薦影片。
     document.documentElement.classList.toggle("zerostudy-fullscreen", !!document.fullscreenElement);
+    // 退出全螢幕時推薦欄又被藏起來，YouTube 卻是照「有推薦欄」算的寬度
+    if (immersionActive) nudgeYouTubeLayout();
+  });
+  // SPA 換頁（例如從首頁點進影片）時，確保播放器照「沒有推薦欄」的寬度排版
+  document.addEventListener("yt-navigate-finish", () => {
+    if (immersionActive) nudgeYouTubeLayout();
   });
 
   setInterval(immersionHeartbeatTick, 1000);

@@ -142,6 +142,14 @@ html.zerostudy-immersion-active:not(.zerostudy-fullscreen) #related,
 html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-next-secondary-results-renderer {
   display: none !important;
 }
+/* 推薦欄藏起來之後，播放器會撐到接近整個視窗寬。播放器背後的「劇院光暈」
+   （#cinematics 的模糊畫布）會往外多畫一圈，這時就超出視窗右緣，
+   整頁多出一條水平捲軸、可以左右晃——看起來就是「版面怪怪的」。
+   用 clip 把超出的部分裁掉：它不像 overflow:hidden 會產生捲動容器，
+   所以 YouTube 的黏性標題列、垂直捲動都不受影響。 */
+html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-flexy #columns {
+  overflow-x: clip;
+}
 
 /* ---------- 控制列上的齒輪按鈕 ---------- */
 /* 沒有自己的背景色——它坐在外層霧面底圖上，再給一層背景就會變成「框裡有框」 */
