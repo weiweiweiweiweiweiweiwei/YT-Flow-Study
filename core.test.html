@@ -640,15 +640,18 @@ async function run() {
     // ---- 從 zeroStudy 帶入的時數：刪掉之後，舊備份也不會把它帶回來 ----
     const { createImmersionSession } = await import("./core/models.js");
     const M = await import("./core/storage/migrate.js");
-    const legacy = createImmersionSession({ videoId: "", videoTitle: "", startedAt: "2026-01-01T12:00:00.000Z",
-      source: "legacy-zerostudy" });
-    legacy.watchedSeconds = 10 * 3600 + 4 * 60; legacy.endedAt = legacy.startedAt;
-    await D.put(D.STORES.IMMERSION_SESSIONS, legacy);
+    // 舊版安裝時啟動流程會同時跑兩次，把這筆塞了兩份（新安裝一打開就是 20 小時 8 分）——兩份都要刪掉
+    for (let copy = 0; copy < 2; copy++) {
+      const legacy = createImmersionSession({ videoId: "", videoTitle: "", startedAt: "2026-01-01T12:00:00.000Z",
+        source: "legacy-zerostudy" });
+      legacy.watchedSeconds = 10 * 3600 + 4 * 60; legacy.endedAt = legacy.startedAt;
+      await D.put(D.STORES.IMMERSION_SESSIONS, legacy);
+    }
     const withLegacy = await I.getTotalSeconds();
     const snapWithLegacy = JSON.parse(JSON.stringify(await B.buildBackupSnapshot()));
     const rm = await M.removeZeroStudyHoursIfNeeded();
-    check("★ 刪掉的正好是 10 小時 4 分", rm.count === 1 && rm.seconds === 36240, JSON.stringify(rm));
-    check("★ 總時數少了 10 小時 4 分，真實紀錄一筆不少", withLegacy - (await I.getTotalSeconds()) === 36240,
+    check("★ 重複塞進去的兩份 10 小時 4 分都刪掉了", rm.count === 2 && rm.seconds === 72480, JSON.stringify(rm));
+    check("★ 總時數正好少了 20 小時 8 分，真實紀錄一筆不少", withLegacy - (await I.getTotalSeconds()) === 72480,
       `${withLegacy} → ${await I.getTotalSeconds()}`);
     check("只執行一次", (await M.removeZeroStudyHoursIfNeeded()).skipped === true);
     await B.restoreBackupSnapshot(snapWithLegacy);

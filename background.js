@@ -40,7 +40,23 @@ if (chrome.storage.session && chrome.storage.session.setAccessLevel) {
 
 // ---------- 啟動時的維護工作 ----------
 
-async function bootstrap() {
+// 安裝或重新載入時，這裡會被呼叫兩次：一次來自 onInstalled，一次來自檔案底部
+// 「service worker 一載入就跑」的那一行，而且兩次幾乎同時開始。
+// 每一項工作都是「先查旗標、沒做過才做、做完才立旗標」，兩次同時跑就會兩邊都查到
+// 「還沒做過」——舊版就是這樣把 zeroStudy 的 10 小時 4 分塞了兩次，新安裝一打開就是 20 小時。
+// 所以同一時間只允許一次：第二個呼叫直接等第一個跑完，共用同一個結果。
+let bootstrapping = null;
+
+function bootstrap() {
+  if (!bootstrapping) {
+    bootstrapping = runBootstrap().finally(() => {
+      bootstrapping = null;
+    });
+  }
+  return bootstrapping;
+}
+
+async function runBootstrap() {
   try {
     const result = await runMigrationIfNeeded();
     if (!result.skipped) {
