@@ -30,6 +30,12 @@ import { lookupWord } from "./core/dictionary/lookup.js";
 import { initAutoBackup, runBackup, getBackupStatus } from "./auto-backup.js";
 import { signInWithGoogle, signOut, getCurrentUser, getRedirectUrl } from "./core/cloud/auth.js";
 import { initCloudSync, runCloudSync, scheduleCloudSync, getSyncStatus, clearSyncStatus } from "./cloud-sync.js";
+import {
+  translateSubtitleBatch,
+  testGeminiKey,
+  setGeminiKey,
+  getTranslateStatus,
+} from "./core/translate/subtitleTranslator.js";
 
 // chrome.storage.session 預設只有 extension 頁面（background/popup）能存取，
 // content script 拿不到。這裡把存取範圍打開，讓 content.js 也能直接讀寫，
@@ -189,6 +195,25 @@ const HANDLERS = {
     return { user: null };
   },
   "sync:now": () => runCloudSync({ reason: "manual" }),
+
+  // 中英雙字幕：content.js 一批批送英文句子過來，這裡翻好（含快取）再送回去
+  "subs:translate": (msg) => translateSubtitleBatch(msg.payload),
+  "subs:status": () => getTranslateStatus(),
+  // 設定頁「儲存並測試」：先真的打一次 Gemini。金鑰錯就不存，免得之後每部影片都先失敗一次
+  "subs:saveGeminiKey": async (msg) => {
+    const key = String((msg.payload && msg.payload.key) || "").trim();
+    try {
+      const test = await testGeminiKey(key);
+      await setGeminiKey(key);
+      return { saved: true, ...test };
+    } catch (err) {
+      if (err.kind === "auth" || !key) throw err;
+      // 額度暫時用完、網路問題：金鑰本身可能沒錯，照樣存起來，只提醒一聲
+      await setGeminiKey(key);
+      return { saved: true, warning: err.message };
+    }
+  },
+  "subs:clearGeminiKey": () => setGeminiKey(""),
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

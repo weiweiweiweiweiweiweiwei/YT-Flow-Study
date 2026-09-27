@@ -687,6 +687,9 @@ function applyTimeline(videoId, sentences, track, status) {
   currentSentenceIndex = -1;
   setTimelineStatus(status);
   updateCurrentSentence();
+  // 新的時間軸（換片、換字幕軌）：舊的中文對不上了，重新翻（翻過的句子背景有快取，會瞬間回來）
+  resetDualSubs();
+  startDualSubsTranslation();
 }
 
 function resetTimelineState() {
@@ -697,6 +700,7 @@ function resetTimelineState() {
   timelineTrack = null;
   currentSentenceIndex = -1;
   resetLiveRecorder();
+  resetDualSubs();
   setTimelineStatus("idle");
 }
 
@@ -1374,14 +1378,22 @@ function buildSettingsPanel() {
         </span>
       </div>
 
-      <div class="fs-panel-divider"></div>
+      <div class="fs-panel-row">
+        <span>
+          <div class="fs-panel-label">中英雙字幕</div>
+          <div class="fs-panel-sub" id="fsDualSubsSub">英文下方同時顯示中文翻譯</div>
+        </span>
+        <button class="fs-switch" id="fsDualSubs" type="button" role="switch"
+                aria-checked="false" ${blocked ? "disabled" : ""}>
+          <span class="fs-switch-knob"></span>
+        </button>
+      </div>
 
-      <button class="fs-panel-action" id="fsOpenDashboard" type="button">
+      <!-- 沒有「完成」按鈕：設定一改就生效，點卡片外面、按 Esc 或右上角 × 都能關掉 -->
+      <button class="fs-modal-home" id="fsOpenDashboard" type="button">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
         首頁
       </button>
-
-      <button class="fs-modal-done" id="fsModalDone" type="button">完成</button>
     </div>`;
 
   // 視窗內的所有滑鼠事件都不要傳出去，否則會被 YouTube 當成「點播放器 = 播放／暫停」
@@ -1395,7 +1407,6 @@ function buildSettingsPanel() {
   });
 
   backdrop.querySelector("#fsModalClose").addEventListener("click", closeSettingsPanel);
-  backdrop.querySelector("#fsModalDone").addEventListener("click", closeSettingsPanel);
 
   backdrop.querySelector("#fsScaleDown").addEventListener("click", () =>
     setCaptionScale(captionScale - CAPTION_SCALE_STEP)
@@ -1410,6 +1421,12 @@ function buildSettingsPanel() {
     setHoverPause(!hoverPauseEnabled);
     hoverBtn.setAttribute("aria-checked", String(hoverPauseEnabled));
     hoverBtn.classList.toggle("is-on", hoverPauseEnabled);
+  });
+
+  const dualBtn = backdrop.querySelector("#fsDualSubs");
+  dualBtn.addEventListener("click", () => {
+    if (dualBtn.disabled) return;
+    setDualSubs(!dualSubsEnabled);
   });
 
   backdrop.querySelector("#fsOpenDashboard").addEventListener("click", () => {
@@ -1444,6 +1461,20 @@ function syncSettingsPanel() {
   const up = settingsPanelEl.querySelector("#fsScaleUp");
   if (down) down.disabled = captionScale <= CAPTION_SCALE_MIN;
   if (up) up.disabled = captionScale >= CAPTION_SCALE_MAX;
+
+  syncDualSubsPanel();
+}
+
+function syncDualSubsPanel() {
+  if (!settingsPanelEl) return;
+  const btn = settingsPanelEl.querySelector("#fsDualSubs");
+  const sub = settingsPanelEl.querySelector("#fsDualSubsSub");
+  const on = dualSubsEnabled && isEnglishCaption() !== false;
+  if (btn) {
+    btn.setAttribute("aria-checked", String(on));
+    btn.classList.toggle("is-on", on);
+  }
+  if (sub) sub.textContent = describeDualSubs();
 }
 
 function toggleSettingsPanel() {
@@ -1483,13 +1514,155 @@ function onSettingsEscape(e) {
 }
 
 function initPlayerSettings() {
-  chrome.storage.local.get([CAPTION_SCALE_KEY, HOVER_PAUSE_KEY], (data) => {
+  chrome.storage.local.get([CAPTION_SCALE_KEY, HOVER_PAUSE_KEY, DUAL_SUBS_KEY], (data) => {
     const scale = data && data[CAPTION_SCALE_KEY];
     if (Number.isFinite(scale)) captionScale = scale;
     if (data && data[HOVER_PAUSE_KEY] === false) hoverPauseEnabled = false;
+    if (data && data[DUAL_SUBS_KEY] === true) {
+      dualSubsEnabled = true;
+      startDualSubsTranslation(); // 字幕時間軸可能比這裡早載入好，補開一次翻譯
+    }
     applyCaptionScale();
     syncSettingsPanel();
   });
+}
+
+// ==================== 中英雙字幕 ====================
+//
+// 英文字幕下方同時顯示中文。翻譯在背景做（Gemini，沒有金鑰就用 Google 翻譯，
+// 見 core/translate/subtitleTranslator.js），這裡只負責「送哪些句子去翻」與「顯示」。
+//
+// 為什麼整部預先翻？一句字幕只停留兩三秒，播到才翻一定來不及。
+// 所以時間軸一載入好就把整部影片切成一批批送出去，而且從「目前播到的地方」那一批先翻：
+// 使用者正在看的那幾句最快出現中文，前面已經看過的放最後。
+// 翻譯結果背景會存起來，同一部影片再看是瞬間出現、不花額度。
+//
+// 只在「有完整字幕時間軸」時提供。即時記錄的備援模式句子是邊播邊長出來的，
+// 沒辦法預先翻。
+const DUAL_SUBS_KEY = "flowstudyDualSubs";
+const DUAL_SUBS_BATCH = 40; // 一批幾句：夠給 Gemini 看上下文，又不會一批等太久
+const DUAL_SUBS_CONCURRENCY = 2; // 同時送幾批：Gemini 免費額度有每分鐘次數限制，不要一次全部灌出去
+const DUAL_SUBS_MAX_RETRIES = 2;
+
+let dualSubsEnabled = false;
+let zhByIndex = []; // 跟 sentenceTimeline 一一對應的中文；undefined = 還沒翻好
+let zhJobToken = 0; // 換片、關閉開關時遞增，讓還在路上的舊批次回來時直接作廢
+let zhRetries = 0;
+let zhProgress = { done: 0, total: 0, engine: "", notice: "", running: false };
+
+function setDualSubs(enabled) {
+  dualSubsEnabled = !!enabled;
+  try {
+    chrome.storage.local.set({ [DUAL_SUBS_KEY]: dualSubsEnabled });
+  } catch (e) {}
+  if (dualSubsEnabled) {
+    zhRetries = 0;
+    startDualSubsTranslation();
+  } else {
+    zhJobToken++; // 關掉就停止送新的批次；已經翻好的留著，再打開不用重翻
+    zhProgress.running = false;
+  }
+  renderCaptionBar();
+  syncDualSubsPanel();
+}
+
+function resetDualSubs() {
+  zhJobToken++;
+  zhByIndex = [];
+  zhRetries = 0;
+  zhProgress = { done: 0, total: 0, engine: "", notice: "", running: false };
+  syncDualSubsPanel();
+}
+
+function describeDualSubs() {
+  if (isEnglishCaption() === false) return "目前字幕不是英文，無法使用";
+  if (!dualSubsEnabled) return "英文下方同時顯示中文翻譯";
+  if (!sentenceTimeline.length) return "等字幕載入後開始翻譯";
+  const engine = zhProgress.engine === "gemini" ? "Gemini" : zhProgress.engine === "google" ? "Google 翻譯" : "";
+  if (zhProgress.running) return `翻譯中… ${zhProgress.done} / ${zhProgress.total} 句`;
+  if (zhProgress.notice) return zhProgress.notice;
+  if (zhProgress.total && zhProgress.done >= zhProgress.total) {
+    return `已翻好 ${zhProgress.total} 句${engine ? "・" + engine : ""}`;
+  }
+  return "英文下方同時顯示中文翻譯";
+}
+
+function startDualSubsTranslation() {
+  zhJobToken++;
+  const token = zhJobToken;
+  const list = sentenceTimeline;
+  if (!dualSubsEnabled || !list.length || isEnglishCaption() === false) {
+    zhProgress.running = false;
+    syncDualSubsPanel();
+    return;
+  }
+
+  // 目前播到的那一批先翻，之後往後，最後才補前面已經看過的
+  const batchStarts = [];
+  for (let i = 0; i < list.length; i += DUAL_SUBS_BATCH) batchStarts.push(i);
+  const first = Math.floor(Math.max(currentSentenceIndex, 0) / DUAL_SUBS_BATCH);
+  const queue = [...batchStarts.slice(first), ...batchStarts.slice(0, first)];
+
+  let failed = 0;
+  zhProgress = {
+    done: list.reduce((n, _, i) => n + (zhByIndex[i] !== undefined ? 1 : 0), 0),
+    total: list.length,
+    engine: zhProgress.engine,
+    notice: "",
+    running: true,
+  };
+  syncDualSubsPanel();
+
+  const title = getVideoTitle();
+  const worker = async () => {
+    while (queue.length) {
+      if (token !== zhJobToken) return;
+      const from = queue.shift();
+      const idxs = [];
+      for (let i = from; i < Math.min(from + DUAL_SUBS_BATCH, list.length); i++) {
+        if (zhByIndex[i] === undefined) idxs.push(i);
+      }
+      if (!idxs.length) continue;
+
+      const res = await sendToBackground("subs:translate", { texts: idxs.map((i) => list[i].text), title });
+      if (token !== zhJobToken) return; // 換片或關掉了，這批作廢
+      if (!res || !Array.isArray(res.translations)) {
+        failed++;
+        continue;
+      }
+      idxs.forEach((i, k) => (zhByIndex[i] = res.translations[k] || ""));
+      zhProgress.done += idxs.length;
+      zhProgress.engine = res.engine || zhProgress.engine;
+      if (res.notice) zhProgress.notice = res.notice;
+      renderCaptionBar();
+      syncDualSubsPanel();
+    }
+  };
+
+  Promise.all(Array.from({ length: DUAL_SUBS_CONCURRENCY }, worker)).then(() => {
+    if (token !== zhJobToken) return;
+    zhProgress.running = false;
+    if (failed) {
+      zhProgress.notice = `有 ${failed} 批翻譯失敗，稍後自動重試`;
+      // 網路短暫斷線之類的：過幾秒只補沒翻到的那幾批
+      if (zhRetries < DUAL_SUBS_MAX_RETRIES) {
+        zhRetries++;
+        setTimeout(() => {
+          if (token === zhJobToken) startDualSubsTranslation();
+        }, 5000);
+      } else {
+        zhProgress.notice = `有 ${failed} 批翻譯失敗，關掉再打開開關可以重試`;
+      }
+    }
+    syncDualSubsPanel();
+  });
+}
+
+// 現在這一句的中文。即時記錄模式、或這句還沒翻好時是空字串。
+function getCaptionZhForNow() {
+  if (!dualSubsEnabled || !sentenceTimeline.length || isEnglishCaption() === false) return "";
+  if (currentSentenceIndex < 0) return "";
+  return zhByIndex[currentSentenceIndex] || "";
 }
 
 // 播放器控制列的空間是「剛好用完」的：實測 1920 寬的視窗，YouTube 自己的
@@ -1836,6 +2009,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
 let captionOverlayEnabled = true;
 let captionBarEl = null;
 let captionBarTextEl = null;
+let captionBarZhEl = null; // 中英雙字幕的中文那一行
+let lastRenderedZh = "";
 let captionBarPos = { leftPct: 50, topPct: 82 };
 let lastRenderedCaptionText = "";
 
@@ -1866,9 +2041,14 @@ function ensureCaptionBar() {
   const bar = document.createElement("div");
   bar.id = "flowstudy-caption-bar";
   bar.className = "flowstudy-caption-bar";
+  // 中文放在英文「旁邊」的獨立元素，而不是塞進英文那一行：
+  // 收藏單字時會把 .flowstudy-caption-text 的內容當成例句存起來，不能混進中文。
   bar.innerHTML =
     '<span class="flowstudy-caption-grip" title="拖曳可以移動字幕位置；雙擊還原到預設位置">⠿</span>' +
-    '<span class="flowstudy-caption-text"></span>';
+    '<span class="flowstudy-caption-lines">' +
+    '<span class="flowstudy-caption-text"></span>' +
+    '<span class="flowstudy-caption-zh" lang="zh-Hant"></span>' +
+    "</span>";
 
   // 點字查詢：這裡特意攔下 click 不讓它繼續往上傳，否則會被 YouTube 當成
   // 「點擊畫面 = 播放／暫停」，每點一個單字影片就暫停一次。
@@ -1886,7 +2066,9 @@ function ensureCaptionBar() {
   player.appendChild(bar);
   captionBarEl = bar;
   captionBarTextEl = bar.querySelector(".flowstudy-caption-text");
+  captionBarZhEl = bar.querySelector(".flowstudy-caption-zh");
   lastRenderedCaptionText = "";
+  lastRenderedZh = "";
   applyCaptionBarPosition();
   return bar;
 }
@@ -2007,9 +2189,12 @@ function renderCaptionBar() {
       captionBarTextEl.innerHTML = "";
       lastRenderedCaptionText = "";
     }
+    renderCaptionZh("");
     return;
   }
   bar.classList.remove("is-empty");
+  // 中文跟選取狀態無關（不能點、不會被選來查字），每次都照播放進度更新
+  renderCaptionZh(getCaptionZhForNow());
 
   if (text !== lastRenderedCaptionText) {
     // 只有在「正在按著滑鼠拖曳選字」的當下才暫緩重畫，避免把選到一半的範圍弄掉。
@@ -2041,6 +2226,12 @@ function renderCaptionBar() {
   bar.classList.toggle("is-stale", stale);
 }
 
+function renderCaptionZh(zh) {
+  if (!captionBarZhEl || zh === lastRenderedZh) return;
+  captionBarZhEl.textContent = zh;
+  lastRenderedZh = zh;
+}
+
 // 記住上次實際套用的狀態，這樣每秒的同步檢查在狀態沒變時是零成本的，
 // 不會每秒都去動 DOM。
 let lastAppliedOverlayState = null;
@@ -2063,7 +2254,9 @@ function applyCaptionOverlayMode(force = false) {
     captionBarEl.remove();
     captionBarEl = null;
     captionBarTextEl = null;
+    captionBarZhEl = null;
     lastRenderedCaptionText = "";
+    lastRenderedZh = "";
   }
 }
 

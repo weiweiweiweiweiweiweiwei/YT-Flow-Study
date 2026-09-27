@@ -40,8 +40,8 @@ const BACKUP_STORES = [
 //   tr:*                 翻譯快取，重新查就有
 //   flowstudyMarkedTerms 字幕底線用的索引，是從單字表重新算出來的投影
 //   flowstudyBackup*     備份本身的紀錄（上次備份時間等），還原回去反而會誤導
-//   flowstudyAuth* / flowstudySync*
-//                        登入 token 與同步狀態——token 絕對不能寫進一個躺在下載資料夾的檔案
+//   flowstudyAuth* / flowstudySync* / flowstudySecret*
+//                        登入 token、同步狀態、Gemini API 金鑰——祕密絕對不能寫進一個躺在下載資料夾的檔案
 //   learningWords / immersion:YYYY-MM-DD / immersion_total_seconds
 //                        舊版格式，早就搬進 IndexedDB 了
 function shouldBackupLocalKey(key) {
@@ -49,6 +49,8 @@ function shouldBackupLocalKey(key) {
   if (key === "flowstudyMarkedTerms") return false;
   if (key.startsWith("flowstudyBackup")) return false;
   if (key.startsWith("flowstudyAuth") || key.startsWith("flowstudySync")) return false;
+  // Gemini API 金鑰之類的祕密，以及翻譯引擎的暫時狀態
+  if (key.startsWith("flowstudySecret") || key === "flowstudyTranslateStatus") return false;
   if (key === "learningWords" || key === "immersion_total_seconds") return false;
   if (/^immersion:\d{4}-\d{2}-\d{2}$/.test(key)) return false;
   return true;

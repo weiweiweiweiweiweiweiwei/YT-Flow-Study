@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>FlowStudy 雙字幕翻譯測試</title>
+<style>
+ body{font-family:"Segoe UI","Microsoft JhengHei",sans-serif;margin:24px;background:#fff;color:#111}
+ pre{background:#f6f7f9;padding:16px;border-radius:8px;white-space:pre-wrap;line-height:1.55;font-size:13px}
+ .hint{color:#666;font-size:13px}
+</style>
+</head>
+<body>
+<h1>FlowStudy 雙字幕翻譯測試</h1>
+<p class="hint">
+  測試 core/translate/subtitleTranslator.js：Gemini 請求格式、各種失敗時改用 Google、快取。
+  網路請求全部換成假的（不會真的打 Gemini 或 Google），IndexedDB 是真的。<b>需要用本機伺服器開啟</b>。
+</p>
+<pre id="out">執行中…</pre>
+
+<script type="module">
+// 這個測試一開始就會刪掉整個 flowstudy 資料庫，不能在擴充功能自己的網址下執行
+if (location.protocol === "chrome-extension:") {
+  document.body.innerHTML =
+    '<h1 style="font:600 20px sans-serif;color:#b91c1c">已停止：這個測試會清空學習資料庫</h1>' +
+    '<p style="font:14px sans-serif">請用本機伺服器開啟測試頁，不要在擴充功能的網址下執行。</p>';
+  throw new Error("拒絕在擴充功能的 origin 執行會清空資料庫的測試");
+}
+
+const lines = [];
+let pass = 0, fail = 0;
+const check = (n, c, d) => { if (c) { pass++; lines.push("  ✓ " + n); } else { fail++; lines.push("  ✗ " + n + (d !== undefined ? "\n      → " + d : "")); } };
+const section = (t) => lines.push("\n" + t);
+
+const mem = {};
+globalThis.chrome = {
+  // 真的 chrome.storage 兩種寫法都支援（回傳 Promise、或傳 callback），這裡也要兩種都支援——
+  // 備份模組用的是 callback 寫法，只回 Promise 的話它會永遠等不到結果
+  storage: { local: {
+    get(keys, cb) {
+      let o = {};
+      if (keys == null) o = { ...mem };
+      else (Array.isArray(keys) ? keys : [keys]).forEach(k => { if (mem[k] !== undefined) o[k] = mem[k]; });
+      if (cb) cb(o);
+      return Promise.resolve(o);
+    },
+    set(o, cb) { Object.assign(mem, o); if (cb) cb(); return Promise.resolve(); },
+    remove(k, cb) { (Array.isArray(k) ? k : [k]).forEach(x => delete mem[x]); if (cb) cb(); return Promise.resolve(); },
+  } },
+  runtime: { lastError: null },
+};
+
+// ---------- 假的網路 ----------
+const calls = [];
+let geminiBehavior = () => null; // (model, body) => Response 或 null（null = 正常翻譯）
+let googleSplitWrong = false;
+const realFetch = window.fetch.bind(window);
+window.fetch = async (url, init = {}) => {
+  url = String(url);
+  if (url.includes("translate.googleapis.com")) {
+    const q = decodeURIComponent(String(init.body).replace(/^q=/, ""));
+    calls.push({ engine: "google", q });
+    const lines = q.split("\n");
+    let out = lines.map(l => "谷歌：" + l).join("\n");
+    if (googleSplitWrong && lines.length > 1) out = lines.map(l => "谷歌：" + l).join(" "); // 模擬把幾句併成一句
+    return new Response(JSON.stringify([[[out, q]]]), { status: 200 });
+  }
+  if (url.includes("generativelanguage.googleapis.com")) {
+    const model = url.match(/models\/([^:]+):generateContent/)[1];
+    const body = JSON.parse(init.body);
+    calls.push({ engine: "gemini", model, body, headers: init.headers });
+    const custom = geminiBehavior(model, body);
+    if (custom) return custom;
+    const texts = JSON.parse(body.contents[0].parts[0].text.split("\n").slice(-1)[0]);
+    const text = JSON.stringify(texts.map(t => "雙子：" + t));
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] }), { status: 200 });
+  }
+  return realFetch(url, init);
+};
+const geminiErr = (status, message) => new Response(JSON.stringify({ error: { code: status, message } }), { status });
+const count = (engine) => calls.filter(c => c.engine === engine).length;
+
+async function run() {
+  await new Promise(r => { const q = indexedDB.deleteDatabase("flowstudy"); q.onsuccess = q.onerror = q.onblocked = () => r(); });
+  const T = await import("./core/translate/subtitleTranslator.js");
+  const B = await import("./core/storage/backup.js");
+
+  section("1. 沒有金鑰：用 Google，一批句子一次送出");
+  const s1 = ["I believe music can change the world.", "At that time", "[music]"];
+  let r = await T.translateSubtitleBatch({ texts: s1, title: "訪談" });
+  check("引擎是 Google", r.engine === "google", r.engine);
+  check("三句只送一個請求", count("google") === 1, count("google"));
+  check("逐句對應", r.translations.join("|") === s1.map(t => "谷歌：" + t).join("|"), r.translations.join("|"));
+  calls.length = 0;
+  r = await T.translateSubtitleBatch({ texts: s1 });
+  check("★ 第二次同樣的句子直接用快取，不再打網路", calls.length === 0 && r.translations[0] === "谷歌：" + s1[0], calls.length);
+
+  section("2. Google 拆回來的句數對不上：改成一句一句翻，不讓中英文錯位");
+  googleSplitWrong = true; calls.length = 0;
+  const s2 = ["Alpha one.", "Bravo two.", "Charlie three."];
+  r = await T.translateSubtitleBatch({ texts: s2 });
+  check("最後結果仍然逐句對應", r.translations.join("|") === s2.map(t => "谷歌：" + t).join("|"), r.translations.join("|"));
+  check("先整批送一次，再逐句補送 3 次", count("google") === 4, count("google"));
+  googleSplitWrong = false;
+
+  section("3. 有 Gemini 金鑰：用 Gemini，請求格式正確");
+  await T.setGeminiKey("TEST-KEY-123");
+  calls.length = 0;
+  const s3 = ["He asked if I ever acted before.", "I told him no."];
+  r = await T.translateSubtitleBatch({ texts: s3, title: "麥可傑克森訪談" });
+  const g = calls.find(c => c.engine === "gemini");
+  check("引擎是 Gemini", r.engine === "gemini", r.engine);
+  check("用的是 gemini-3.8-flash", g && g.model === "gemini-3.8-flash", g && g.model);
+  check("金鑰放在 x-goog-api-key 標頭（不放網址）", g && g.headers["x-goog-api-key"] === "TEST-KEY-123");
+  check("要求回傳 JSON 陣列", g && g.body.generationConfig.responseMimeType === "application/json" &&
+    g.body.generationConfig.responseSchema.type === "ARRAY");
+  check("翻譯用低思考等級（速度優先）", g && g.body.generationConfig.thinkingConfig && g.body.generationConfig.thinkingConfig.thinkingLevel === "LOW");
+  check("系統指示要求台灣繁體中文、句數不變", g && /台灣/.test(g.body.systemInstruction.parts[0].text) && /長度必須和輸入完全相同/.test(g.body.systemInstruction.parts[0].text));
+  check("影片標題當上下文送出", g && g.body.contents[0].parts[0].text.includes("麥可傑克森訪談"));
+  check("逐句對應", r.translations.join("|") === s3.map(t => "雙子：" + t).join("|"), r.translations.join("|"));
+  check("不會打 Google", count("google") === 0);
+
+  section("4. ★ 之前用 Google 翻過的句子，有金鑰之後改用 Gemini 重翻");
+  calls.length = 0;
+  r = await T.translateSubtitleBatch({ texts: s1 });
+  check("改用 Gemini", r.engine === "gemini" && r.translations[0] === "雙子：" + s1[0], r.translations[0]);
+
+  section("5. 模型不支援思考設定：拿掉設定再送一次");
+  await T.setGeminiKey("TEST-KEY-123"); calls.length = 0;
+  geminiBehavior = (model, body) => body.generationConfig.thinkingConfig ? geminiErr(400, "Thinking level is not supported for this model.") : null;
+  r = await T.translateSubtitleBatch({ texts: ["Thinking test one."] });
+  const gs = calls.filter(c => c.engine === "gemini");
+  check("第二次送出時沒有 thinkingConfig", gs.length === 2 && !gs[1].body.generationConfig.thinkingConfig, gs.length);
+  check("最後翻譯成功", r.engine === "gemini" && r.translations[0] === "雙子：Thinking test one.", JSON.stringify(r));
+
+  section("6. 找不到模型（404）：改試下一個模型");
+  await T.setGeminiKey("TEST-KEY-123"); calls.length = 0;
+  geminiBehavior = (model) => model === "gemini-3.8-flash" ? geminiErr(404, "models/gemini-3.8-flash is not found") : null;
+  r = await T.translateSubtitleBatch({ texts: ["Model fallback test."] });
+  check("改用 gemini-3.5-flash 並成功", calls.filter(c => c.engine === "gemini").map(c => c.model).join(",") === "gemini-3.8-flash,gemini-3.5-flash" && r.engine === "gemini",
+    calls.filter(c => c.engine === "gemini").map(c => c.model).join(","));
+  calls.length = 0;
+  await T.translateSubtitleBatch({ texts: ["Model fallback test two."] });
+  check("記住能用的模型，下一批不再先撞 404", calls.find(c => c.engine === "gemini").model === "gemini-3.5-flash");
+
+  section("7. ★ 額度用完（429）：這一批改用 Google，使用者照樣有中文");
+  await T.setGeminiKey("TEST-KEY-123"); calls.length = 0;
+  geminiBehavior = () => geminiErr(429, "Resource has been exhausted (e.g. check quota).");
+  r = await T.translateSubtitleBatch({ texts: ["Quota test."] });
+  check("改用 Google", r.engine === "google" && r.translations[0] === "谷歌：Quota test.", JSON.stringify(r));
+  check("附上原因讓畫面顯示", /額度/.test(r.notice || ""), r.notice);
+  check("設定頁看得到失敗紀錄", mem.flowstudyTranslateStatus && mem.flowstudyTranslateStatus.ok === false);
+  geminiBehavior = () => null; calls.length = 0;
+  r = await T.translateSubtitleBatch({ texts: ["Quota test."] });
+  check("額度恢復後同一句會改用 Gemini 重翻（Google 的結果不會卡住它）", r.engine === "gemini" && r.translations[0] === "雙子：Quota test.", JSON.stringify(r));
+
+  section("8. 金鑰無效：改用 Google，而且一段時間內不再每批都撞一次");
+  await T.setGeminiKey("BAD-KEY"); calls.length = 0;
+  geminiBehavior = () => geminiErr(400, "API key not valid. Please pass a valid API key.");
+  r = await T.translateSubtitleBatch({ texts: ["Bad key one."] });
+  check("改用 Google", r.engine === "google", r.engine);
+  check("原因是金鑰無效", /金鑰無效/.test(r.notice || ""), r.notice);
+  calls.length = 0;
+  r = await T.translateSubtitleBatch({ texts: ["Bad key two."] });
+  check("★ 下一批直接用 Google，不再打 Gemini", count("gemini") === 0 && r.engine === "google", `gemini ${count("gemini")} 次`);
+
+  section("9. Gemini 回傳句數對不上：重試一次，還是不對就改用 Google");
+  await T.setGeminiKey("TEST-KEY-123"); calls.length = 0;
+  geminiBehavior = () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: '["只有一句"]' }] } }] }), { status: 200 });
+  r = await T.translateSubtitleBatch({ texts: ["Count one.", "Count two."] });
+  check("Gemini 試了 2 次", count("gemini") === 2, count("gemini"));
+  check("最後改用 Google，逐句對應沒有錯位", r.engine === "google" && r.translations.join("|") === "谷歌：Count one.|谷歌：Count two.", r.translations.join("|"));
+  geminiBehavior = () => null;
+
+  section("10. 設定頁的「儲存並測試」");
+  let threw = null;
+  geminiBehavior = () => geminiErr(403, "Permission denied");
+  try { await T.testGeminiKey("WRONG"); } catch (e) { threw = e; }
+  check("金鑰錯誤會丟出錯誤（背景就不會把它存起來）", threw && threw.kind === "auth", threw && threw.message);
+  geminiBehavior = () => null;
+  const ok = await T.testGeminiKey("TEST-KEY-123");
+  check("金鑰正確回傳一句測試翻譯", /^雙子：/.test(ok.sample), ok.sample);
+  threw = null;
+  try { await T.testGeminiKey("  "); } catch (e) { threw = e; }
+  check("沒貼金鑰直接提示", !!threw);
+
+  section("11. ★ 金鑰不會被寫進備份檔");
+  await T.setGeminiKey("SECRET-KEY-XYZ");
+  mem.flowstudySettings = { dailyGoalMinutes: 30 };
+  const snap = await B.buildBackupSnapshot();
+  const json = JSON.stringify(snap);
+  check("備份檔裡找不到金鑰", !json.includes("SECRET-KEY-XYZ"));
+  check("翻譯狀態也不進備份", !("flowstudyTranslateStatus" in snap.storageLocal));
+  check("一般設定照常備份", snap.storageLocal.flowstudySettings && snap.storageLocal.flowstudySettings.dailyGoalMinutes === 30);
+  check("翻譯快取不進備份（隨時可以重翻）", !("subtitleTranslations" in snap.stores));
+  const st = await T.getTranslateStatus();
+  check("狀態查詢只回報「有沒有金鑰」，不回傳金鑰本身", st.hasGeminiKey === true && !JSON.stringify(st).includes("SECRET"));
+  await T.setGeminiKey("");
+  check("移除金鑰", !(await T.getTranslateStatus()).hasGeminiKey && mem.flowstudySecretGeminiKey === undefined);
+
+  section("12. 空白與空句");
+  r = await T.translateSubtitleBatch({ texts: ["", "   ", "Real sentence."] });
+  check("空句回傳空字串、不送去翻", r.translations[0] === "" && r.translations[1] === "" && r.translations[2] === "谷歌：Real sentence.", JSON.stringify(r.translations));
+  r = await T.translateSubtitleBatch({ texts: [] });
+  check("空陣列不會出錯", Array.isArray(r.translations) && r.translations.length === 0);
+}
+
+run().catch(e => { lines.push("\n例外：" + (e && e.stack || e)); fail++; }).finally(() => {
+  lines.push("\n" + "=".repeat(52));
+  lines.push(`通過 ${pass} 項，失敗 ${fail} 項`);
+  document.getElementById("out").textContent = lines.join("\n");
+  document.title = fail === 0 ? "ALL PASS" : ("FAIL " + fail);
+});
+</script>
+</body>
+</html>

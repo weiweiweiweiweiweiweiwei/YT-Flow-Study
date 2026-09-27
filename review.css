@@ -1108,6 +1108,34 @@ html[data-theme="dark"] .google-btn:hover:not(:disabled) {
   margin-top: 10px;
 }
 
+/* ---------- 設定：中英雙字幕（Gemini 金鑰） ---------- */
+
+.key-input {
+  flex: 1;
+  min-width: 220px;
+  padding: 9px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+.key-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+.key-input::placeholder {
+  color: var(--text-tertiary);
+  font-family: inherit;
+}
+#translateCard a {
+  color: var(--primary-text);
+}
+#translateMessage:not(:empty) {
+  margin-top: 10px;
+}
+
 /* ---------- 設定：資料備份 ---------- */
 
 .data-row {

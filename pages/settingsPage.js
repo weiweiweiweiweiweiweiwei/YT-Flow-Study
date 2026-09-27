@@ -1,10 +1,11 @@
 // ============================================================================
 // 設定頁
 // ============================================================================
-// 四組設定：
+// 五組設定：
 //   帳號與雲端同步 —— Google 登入、同步狀態、立即同步、登出
 //   每日沉浸目標   —— 滑桿，5 到 120 分鐘，每 5 分鐘一格
 //   外觀          —— 淺色 / 深色
+//   中英雙字幕    —— Gemini API 金鑰（沒填就用 Google 翻譯）；開關本身在播放器的設定面板
 //   資料備份      —— 自動備份的狀態、立即備份、從備份檔還原
 //
 // 刻意沒有做的：訂閱、付費點數、語言偏好、發音語音、刪除帳戶。
@@ -24,6 +25,7 @@ const ICONS = {
   cloud: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>`,
   // Google 官方登入按鈕的四色 G（登入按鈕依規範要用原色標誌）
   google: `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>`,
+  languages: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>`,
   database: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>`,
 };
 
@@ -56,10 +58,10 @@ function describeSummary(summary) {
 
 // 設定頁碰得到 IndexedDB，但下載檔案、排程這些事統一交給背景做，
 // 自動備份和「立即備份」才會走同一條路、寫進同一個資料夾。
-function askBackground(type) {
+function askBackground(type, payload) {
   return new Promise((resolve, reject) => {
     try {
-      chrome.runtime.sendMessage({ type }, (res) => {
+      chrome.runtime.sendMessage({ type, payload }, (res) => {
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
         else if (!res || !res.ok) reject(new Error((res && res.error) || "背景沒有回應"));
         else resolve(res.data);
@@ -197,6 +199,88 @@ async function initAccountCard(root) {
   } catch (err) {
     card.querySelector("#accountBody").innerHTML = "";
     showMessage("讀取登入狀態失敗：" + (err.message || err), true);
+  }
+}
+
+// ---------- 中英雙字幕（翻譯引擎與 Gemini 金鑰）----------
+
+function renderTranslateStatus(card, status) {
+  const el = card.querySelector("#translateStatus");
+  const input = card.querySelector("#geminiKeyInput");
+  const clearBtn = card.querySelector("#clearGeminiKey");
+  const has = !!(status && status.hasGeminiKey);
+  const last = status && status.last;
+
+  let engineText = has ? "Gemini" : "Google 翻譯（還沒設定 Gemini 金鑰）";
+  if (has && last && last.engine === "gemini" && last.ok && last.model) engineText = `Gemini（${last.model}）`;
+  el.innerHTML = `
+    <div class="data-row">
+      <span class="data-label">目前的翻譯引擎</span>
+      <span class="data-sub">${escapeHtml(engineText)}</span>
+    </div>
+    ${
+      has && last && last.engine === "gemini" && !last.ok
+        ? `<p class="settings-hint data-error">最近一次 Gemini 翻譯失敗，已自動改用 Google 翻譯：${escapeHtml(last.error || "")}</p>`
+        : ""
+    }`;
+  // 金鑰存好之後不再顯示在畫面上，輸入框只提示「已設定」
+  input.value = "";
+  input.placeholder = has ? "已設定金鑰（貼上新的金鑰可以更換）" : "貼上 Gemini API 金鑰";
+  clearBtn.hidden = !has;
+}
+
+async function initTranslateCard(root) {
+  const card = root.querySelector("#translateCard");
+  if (!card) return;
+  const message = card.querySelector("#translateMessage");
+  const input = card.querySelector("#geminiKeyInput");
+  const saveBtn = card.querySelector("#saveGeminiKey");
+  const clearBtn = card.querySelector("#clearGeminiKey");
+  const showMessage = (text, isError = false) => {
+    message.textContent = text;
+    message.classList.toggle("data-error", isError);
+  };
+  const refresh = async () => renderTranslateStatus(card, await askBackground("subs:status"));
+
+  saveBtn.addEventListener("click", async () => {
+    const key = input.value.trim();
+    if (!key) {
+      showMessage("請先貼上金鑰。", true);
+      return;
+    }
+    saveBtn.disabled = true;
+    showMessage("正在用這把金鑰實際翻譯一句測試…");
+    try {
+      const r = await askBackground("subs:saveGeminiKey", { key });
+      await refresh();
+      showMessage(
+        r && r.warning
+          ? `金鑰已儲存，但測試時：${r.warning}`
+          : `金鑰可以用！測試翻譯：「${(r && r.sample) || ""}」`,
+        !!(r && r.warning)
+      );
+    } catch (err) {
+      showMessage("金鑰沒有儲存：" + (err.message || err), true);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  clearBtn.addEventListener("click", async () => {
+    if (!confirm("確定要移除 Gemini 金鑰嗎？之後的中英雙字幕會改用 Google 翻譯。")) return;
+    try {
+      await askBackground("subs:clearGeminiKey");
+      await refresh();
+      showMessage("已移除金鑰，之後改用 Google 翻譯。");
+    } catch (err) {
+      showMessage("移除失敗：" + (err.message || err), true);
+    }
+  });
+
+  try {
+    await refresh();
+  } catch (err) {
+    showMessage("讀取翻譯設定失敗：" + (err.message || err), true);
   }
 }
 
@@ -368,6 +452,27 @@ export async function renderSettingsPage(root, { onThemeChange } = {}) {
       </div>
     </div>
 
+    <div class="card settings-card" id="translateCard">
+      <div class="settings-head">${ICONS.languages} 中英雙字幕</div>
+      <p class="settings-hint">
+        在影片播放器上的 FlowStudy 設定（齒輪）打開「中英雙字幕」，英文字幕下方就會同時顯示中文。
+        整部影片會先翻好並存起來，重看同一部不用再翻。
+        填了 Gemini 金鑰就用 Gemini 翻譯（看得到上下文，口語比較自然）；沒填就用 Google 翻譯。
+      </p>
+      <div id="translateStatus"><div class="settings-hint">載入中…</div></div>
+      <div class="data-actions">
+        <input class="key-input" id="geminiKeyInput" type="password" autocomplete="off" spellcheck="false"
+               placeholder="貼上 Gemini API 金鑰" aria-label="Gemini API 金鑰" />
+        <button class="data-btn data-btn-primary" id="saveGeminiKey" type="button">儲存並測試</button>
+        <button class="data-btn" id="clearGeminiKey" type="button" hidden>移除金鑰</button>
+      </div>
+      <p class="settings-hint">
+        還沒有金鑰？到 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> 免費申請。
+        金鑰只存在這台電腦，不會寫進備份檔，也不會同步到雲端。
+      </p>
+      <div class="settings-hint" id="translateMessage" role="status"></div>
+    </div>
+
     <div class="card settings-card" id="backupCard">
       <div class="settings-head">${ICONS.database} 資料備份</div>
       <p class="settings-hint">
@@ -416,5 +521,6 @@ export async function renderSettingsPage(root, { onThemeChange } = {}) {
   });
 
   initAccountCard(root);
+  initTranslateCard(root);
   initBackupCard(root);
 }

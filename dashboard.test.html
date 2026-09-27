@@ -481,6 +481,13 @@ const txt = () => $(".content-inner").textContent.replace(/\s+/g, " ");
     check("Google 按鈕是圓角膠囊（有套到樣式）", getComputedStyle($("#signInBtn")).borderRadius === "999px",
       getComputedStyle($("#signInBtn")).borderRadius);
 
+    const tc = $("#translateCard");
+    check("有「中英雙字幕」卡片", !!tc && tc.textContent.includes("中英雙字幕"));
+    check("金鑰輸入框是密碼欄位（不會明碼顯示在畫面上）", $("#geminiKeyInput")?.type === "password");
+    check("還沒設定金鑰時顯示用 Google 翻譯", tc && tc.textContent.includes("Google 翻譯（還沒設定 Gemini 金鑰）"));
+    check("還沒設定金鑰時不顯示「移除金鑰」", $("#clearGeminiKey")?.hidden === true);
+    check("有申請金鑰的連結", !!tc?.querySelector('a[href="https://aistudio.google.com/apikey"]'));
+
     const card = $("#backupCard");
     check("設定頁有資料備份卡片", !!card);
     check("有「立即備份」與「從備份檔還原」兩顆按鈕", !!$("#backupNow") && !!$("#restoreBtn"));
@@ -509,7 +516,7 @@ const txt = () => $(".content-inner").textContent.replace(/\s+/g, " ");
   }
 
   paint();
-})().catch(e => { lines.push("\n例外：" + (e && e.stack || e)); paint(); });
+})().catch(e => { lines.push("\n例外：" + (e && e.stack || e)); fail++; paint(); });
 </script>
 </body>
 </html>

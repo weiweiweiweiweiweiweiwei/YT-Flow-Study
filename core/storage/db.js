@@ -18,7 +18,7 @@
 // ============================================================================
 
 const DB_NAME = "flowstudy";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export const STORES = {
   VOCABULARY: "vocabulary",
@@ -28,6 +28,7 @@ export const STORES = {
   VIDEOS: "videos",
   META: "meta",
   DICTIONARY: "dictionary",
+  SUBTITLE_TRANSLATIONS: "subtitleTranslations",
 };
 
 let dbPromise = null;
@@ -89,6 +90,14 @@ export function openDb() {
         // 查完就存起來，之後開同一個單字都是瞬間顯示、完全離線可用。
         // keyPath 用正規化後的單字，"Run" 和 "run." 會命中同一筆。
         db.createObjectStore(STORES.DICTIONARY, { keyPath: "term" });
+      }
+
+      if (oldVersion < 3) {
+        // --- 中英雙字幕的翻譯快取 ---
+        // 以「引擎 + 英文句子」為 key，不是以影片為單位：斷句規則日後調整時，
+        // 句子切法變了也不會對錯位置；不同影片裡一模一樣的句子也能共用。
+        // 這一版只「新增」一個 store，既有的學習資料完全不動。
+        db.createObjectStore(STORES.SUBTITLE_TRANSLATIONS, { keyPath: "key" });
       }
     };
 
