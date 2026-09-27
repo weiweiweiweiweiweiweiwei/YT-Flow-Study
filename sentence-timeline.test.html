@@ -270,6 +270,37 @@
     check("時間遞增時索引只增不減（索引穩定）", monotonic);
   }
 
+  // ========== 12b. 假的字級時間（人工字幕的舊 bug） ==========
+  section("12b. 一個 cue 只有一個時間點時，不可以當成字級時間");
+  {
+    // 以前橋接層會把人工字幕整個 cue 當成一個「字級時間」片段送進來，
+    // 等於宣稱 cue 裡每個字都在 cue 開始那一刻說出來。
+    const out = S.buildSentenceTimeline([
+      { text: "That was a great day. Then we went", start: 10, end: 15,
+        words: [{ text: "That was a great day. Then we went", start: 10 }] },
+      { text: "home and slept for hours.", start: 15, end: 18,
+        words: [{ text: "home and slept for hours.", start: 15 }] },
+    ]);
+    check("切成 2 句", out.length === 2, JSON.stringify(texts(out)));
+    check("★ 第二句的開始時間落在 cue 中間，不是跟第一句同時開始",
+          out[1] && out[1].start > 12 && out[1].start < 15, out[1] && out[1].start.toFixed(2));
+    check("★ 播到第 10.5 秒時顯示的是第一句", S.getCurrentSentenceIndex(10.5, out) === 0,
+          S.getCurrentSentenceIndex(10.5, out));
+
+    // 真的字級時間（自動字幕：每個片段一個詞、時間各不相同）照舊使用
+    const asr = S.buildSentenceTimeline([
+      { text: "we went home", start: 20, end: 23,
+        words: [{ text: "we", start: 20 }, { text: " went", start: 21.5 }, { text: " home", start: 22.4 }] },
+    ]);
+    const toks = S.buildTokens(S.normalizeCues([
+      { text: "we went home", start: 20, end: 23,
+        words: [{ text: "we", start: 20 }, { text: " went", start: 21.5 }, { text: " home", start: 22.4 }] },
+    ]));
+    check("真正的字級時間仍然照用（went = 21.5 秒）", toks[1] && Math.abs(toks[1].start - 21.5) < 0.01,
+          toks[1] && toks[1].start);
+    check("單一個詞的片段也照用", asr.length === 1);
+  }
+
   // ========== 13. 大量資料的效能 ==========
   section("13. 效能（長片可能有數千句）");
   {

@@ -280,15 +280,23 @@
 
       let text = "";
       const words = [];
+      let hasWordTiming = false;
       for (const seg of ev.segs) {
         if (!seg || typeof seg.utf8 !== "string") continue;
         text += seg.utf8;
         const off = Number(seg.tOffsetMs);
+        if (Number.isFinite(off)) hasWordTiming = true;
         words.push({ text: seg.utf8, start: startSec + (Number.isFinite(off) ? off / 1000 : 0) });
       }
 
       if (!text.trim()) continue;
-      cues.push({ text, start: startSec, end: endSec, words });
+      // 只有真的帶 tOffsetMs（自動產生字幕）才附上字級時間。
+      // 人工字幕整個 cue 只有一個 seg、沒有任何 tOffsetMs——以前照樣附上 words，
+      // 等於宣稱「這個 cue 裡每個字都在 cue 開始的那一刻說出來」。
+      // 一個 cue 常常是「上一句的結尾 + 下一句的開頭」，兩句於是拿到同一個開始時間，
+      // 播放時永遠顯示後面那句：前一句從來不會出現，字幕也比畫面提早好幾秒。
+      // 不附 words，斷句引擎就會在 cue 的時間範圍內依字元位置估算，誤差約 0.2 秒。
+      cues.push(hasWordTiming ? { text, start: startSec, end: endSec, words } : { text, start: startSec, end: endSec });
     }
 
     return cues;

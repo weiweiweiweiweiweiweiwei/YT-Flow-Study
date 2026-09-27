@@ -160,6 +160,13 @@
           segments.push({ text, start: wStart === null ? start : Math.max(wStart, 0) });
         }
         if (!segments.length) segments = null;
+        // 所有片段都是同一個時間點、裡面卻不只一個詞 → 這不是字級時間，只是整個 cue 的開始時間。
+        // 當成字級時間用的話，cue 裡每個詞都會「在 cue 開始時說出」：句子從 cue 中間開始時，
+        // 會跟前一句拿到同一個開始時間，前一句就永遠不會被顯示。改走依字元位置內插。
+        if (segments && new Set(segments.map((s) => s.start)).size === 1) {
+          const wordCount = segments.map((s) => s.text).join("").trim().split(/\s+/).length;
+          if (wordCount > 1) segments = null;
+        }
       }
 
       const text = (segments ? segments.map((s) => s.text).join("") : cleanSegmentText(raw.text)).trim();
