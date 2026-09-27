@@ -225,7 +225,7 @@ async function run() {
   render();
 }
 
-run().catch(err => { lines.push("\n執行時發生例外：" + (err && err.stack || err)); render(); });
+run().catch(err => { lines.push("\n執行時發生例外：" + (err && err.stack || err)); fail++; render(); });
 </script>
 </body>
 </html>

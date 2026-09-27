@@ -671,6 +671,7 @@ async function run() {
 
 run().catch((err) => {
   lines.push("\n執行時發生例外：" + (err && err.stack ? err.stack : err));
+  fail++; // 中途例外代表後面的項目根本沒跑到，標題不能顯示 ALL PASS
   render();
 });
 </script>
