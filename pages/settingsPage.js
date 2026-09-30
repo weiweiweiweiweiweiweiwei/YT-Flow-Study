@@ -222,6 +222,13 @@ function renderTranslateStatus(card, status) {
       has && last && last.engine === "gemini" && !last.ok
         ? `<p class="settings-hint data-error">最近一次 Gemini 翻譯失敗，已自動改用 Google 翻譯：${escapeHtml(last.error || "")}</p>`
         : ""
+    }
+    ${
+      status && status.googleBlocked
+        ? `<p class="settings-hint data-error">Google 翻譯目前暫時限制這個網路（短時間內翻譯太多次），約 30 分鐘後自動恢復。${
+            has ? "這段期間查單字與雙字幕都改用 Gemini。" : "填入 Gemini 金鑰可以馬上恢復。"
+          }</p>`
+        : ""
     }`;
   // 金鑰存好之後不再顯示在畫面上，輸入框只提示「已設定」
   input.value = "";

@@ -91,34 +91,56 @@ function getVideoEl() {
 }
 
 // ---------- 滑鼠移到字幕上自動暫停／移開自動續播 ----------
-// 用 relatedTarget 判斷「是不是真的離開整個字幕區」，
-// 避免滑鼠在字幕裡的一個個單字（子元素）之間移動時，被誤判成離開又進入，造成暫停/播放狀態錯亂。
-document.addEventListener("mouseover", (e) => {
+//
+// 只認「滑鼠真的有移動」，所以用 mousemove 判斷進出，不用 mouseover／mouseout。
+//
+// 以前用 mouseover／mouseout，出過這個問題：滑鼠停在字幕附近不動，按空白鍵播放，
+// 換到下一句時字幕框變寬、變高（長句、雙字幕的中文那一行），剛好蓋到游標底下，
+// Chrome 就算滑鼠完全沒動也會送出 mouseover，影片播不到一秒就被自動暫停；
+// 字幕框縮小、離開游標時又送出 mouseout，暫停中的影片自己開始播。
+// 看起來就像空白鍵壞掉：「播放一秒又暫停、暫停一秒又播放」。
+// 字幕框在游標底下變形不代表使用者想看字幕，mousemove 只有真的移動才會觸發，不會被騙。
+let pointerOverCaption = false;
+
+function onCaptionPointerEnter() {
   // 使用者自己關掉了這個行為，或這部影片的字幕不是英文
   if (!hoverPauseEnabled || !isLearningEnabled()) return;
-  const container = e.target.closest(CAPTION_AREA_SELECTOR);
-  if (!container) return;
-  if (container.contains(e.relatedTarget)) return; // 只是在字幕內部的單字之間移動，不算真正進入
-
   const video = getVideoEl();
   if (video && !video.paused) {
     wasPlayingBeforeHover = true;
     video.pause();
   }
-});
+}
 
-document.addEventListener("mouseout", (e) => {
+function onCaptionPointerLeave() {
   if (!hoverPauseEnabled || !isLearningEnabled()) return;
-  const container = e.target.closest(CAPTION_AREA_SELECTOR);
-  if (!container) return;
-  if (container.contains(e.relatedTarget)) return; // 還在字幕內部移動，不算真正離開
-
   if (actionPaused) return; // 使用者點了單字或選取了片語，先不要自動續播
   const video = getVideoEl();
   if (video && wasPlayingBeforeHover && video.paused) {
     video.play().catch(() => {});
   }
   wasPlayingBeforeHover = false;
+}
+
+document.addEventListener(
+  "mousemove",
+  (e) => {
+    // 在字幕裡的一個個單字之間移動，closest 都會找到同一個字幕區，不算離開又進入
+    const over = !!(e.target.closest && e.target.closest(CAPTION_AREA_SELECTOR));
+    if (over === pointerOverCaption) return;
+    pointerOverCaption = over;
+    if (over) onCaptionPointerEnter();
+    else onCaptionPointerLeave();
+  },
+  { capture: true, passive: true }
+);
+
+// 滑鼠從字幕上直接移出瀏覽器視窗：外面收不到 mousemove，
+// 只剩這個「移到哪裡都不是（relatedTarget 是 null）」的 mouseout 能當離開的訊號
+document.addEventListener("mouseout", (e) => {
+  if (e.relatedTarget || !pointerOverCaption) return;
+  pointerOverCaption = false;
+  onCaptionPointerLeave();
 });
 
 // 使用者自己按播放（原生控制列 / 空白鍵）就解除「先不要自動續播」的狀態
@@ -685,11 +707,13 @@ function applyTimeline(videoId, sentences, track, status) {
   timelineVideoId = videoId;
   timelineTrack = track;
   currentSentenceIndex = -1;
+  // 新的時間軸（換片、換字幕軌）：舊的中文對不上了，從目前位置重新翻（翻過的句子背景有快取，會瞬間回來）。
+  // 一定要在 updateCurrentSentence 之前重設：它會觸發翻譯，若之後才重設，
+  // 剛送出的那一批會被作廢、再送一次一模一樣的——每換一部影片就多浪費一次請求。
+  resetDualSubs();
   setTimelineStatus(status);
   updateCurrentSentence();
-  // 新的時間軸（換片、換字幕軌）：舊的中文對不上了，重新翻（翻過的句子背景有快取，會瞬間回來）
-  resetDualSubs();
-  startDualSubsTranslation();
+  ensureDualSubsWindow(); // 還沒播到第一句時句子編號不會變，上一行不會觸發，這裡補一次（重複呼叫沒有副作用）
 }
 
 function resetTimelineState() {
@@ -728,6 +752,8 @@ function updateCurrentSentence() {
   if (idx !== currentSentenceIndex) {
     currentSentenceIndex = idx;
     renderSentenceChip();
+    // 播到下一句、或跳到別的地方：看要不要翻下一段 10 分鐘
+    ensureDualSubsWindow();
   }
 }
 
@@ -1389,11 +1415,8 @@ function buildSettingsPanel() {
         </button>
       </div>
 
-      <!-- 沒有「完成」按鈕：設定一改就生效，點卡片外面、按 Esc 或右上角 × 都能關掉 -->
-      <button class="fs-modal-home" id="fsOpenDashboard" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        首頁
-      </button>
+      <!-- 設定一改就生效，「完成」只是關掉視窗；點卡片外面、按 Esc、右上角 × 也都能關 -->
+      <button class="fs-modal-done" id="fsModalDone" type="button">完成</button>
     </div>`;
 
   // 視窗內的所有滑鼠事件都不要傳出去，否則會被 YouTube 當成「點播放器 = 播放／暫停」
@@ -1407,6 +1430,7 @@ function buildSettingsPanel() {
   });
 
   backdrop.querySelector("#fsModalClose").addEventListener("click", closeSettingsPanel);
+  backdrop.querySelector("#fsModalDone").addEventListener("click", closeSettingsPanel);
 
   backdrop.querySelector("#fsScaleDown").addEventListener("click", () =>
     setCaptionScale(captionScale - CAPTION_SCALE_STEP)
@@ -1427,13 +1451,6 @@ function buildSettingsPanel() {
   dualBtn.addEventListener("click", () => {
     if (dualBtn.disabled) return;
     setDualSubs(!dualSubsEnabled);
-  });
-
-  backdrop.querySelector("#fsOpenDashboard").addEventListener("click", () => {
-    try {
-      chrome.runtime.sendMessage({ type: "open:dashboard" }, () => void chrome.runtime.lastError);
-    } catch (e) {}
-    closeSettingsPanel();
   });
 
   return backdrop;
@@ -1485,6 +1502,9 @@ function toggleSettingsPanel() {
   // 全螢幕時必須掛在全螢幕元素底下，否則整個視窗會被蓋掉看不見。
   // 一般情況掛在 body；兩種情況都用 position: fixed 對齊畫面正中央。
   const host = document.fullscreenElement || document.body;
+  // 查字的翻譯小框框收掉：它的層級比設定視窗高，留著會蓋在設定上面。
+  // 打開設定＝這個字看完了，跟恢復播放時收掉框框是同一個道理。
+  closeBox();
   settingsPanelEl = buildSettingsPanel();
   host.appendChild(settingsPanelEl);
   syncSettingsPanel();
@@ -1520,7 +1540,7 @@ function initPlayerSettings() {
     if (data && data[HOVER_PAUSE_KEY] === false) hoverPauseEnabled = false;
     if (data && data[DUAL_SUBS_KEY] === true) {
       dualSubsEnabled = true;
-      startDualSubsTranslation(); // 字幕時間軸可能比這裡早載入好，補開一次翻譯
+      ensureDualSubsWindow(); // 字幕時間軸可能比這裡早載入好，補翻一次目前位置
     }
     applyCaptionScale();
     syncSettingsPanel();
@@ -1532,23 +1552,30 @@ function initPlayerSettings() {
 // 英文字幕下方同時顯示中文。翻譯在背景做（Gemini，沒有金鑰就用 Google 翻譯，
 // 見 core/translate/subtitleTranslator.js），這裡只負責「送哪些句子去翻」與「顯示」。
 //
-// 為什麼整部預先翻？一句字幕只停留兩三秒，播到才翻一定來不及。
-// 所以時間軸一載入好就把整部影片切成一批批送出去，而且從「目前播到的地方」那一批先翻：
-// 使用者正在看的那幾句最快出現中文，前面已經看過的放最後。
-// 翻譯結果背景會存起來，同一部影片再看是瞬間出現、不花額度。
+// 邊看邊翻，一次只翻「目前位置往後 10 分鐘」：
+//   以前是時間軸一載入就整部送出去。2026-09-29 開了一部 12 小時的影片、只看了 2 分鐘，
+//   整部 12 小時的字幕全部丟給 Google，Google 就把整個網路擋了下來。現在的規則：
+//     - 翻的範圍是「目前位置往前 30 秒 ～ 往後 10 分鐘」（往前一點，按 a 回上一句也有中文）
+//     - 播到離「還沒翻的地方」剩不到 3 分鐘時，才往後再翻 10 分鐘——
+//       一次一小段地送，不會每幾秒就零碎地送一兩句
+//     - 跳到影片別的地方，就從那裡開始翻 10 分鐘；翻好之前的十幾秒先只有英文
+//   翻過的句子背景有快取，倒回去看、同一部影片重看都不會再翻一次。
 //
-// 只在「有完整字幕時間軸」時提供。即時記錄的備援模式句子是邊播邊長出來的，
-// 沒辦法預先翻。
+// 只在「有完整字幕時間軸」時提供。即時記錄的備援模式句子是邊播邊長出來的，沒辦法預先翻。
 const DUAL_SUBS_KEY = "flowstudyDualSubs";
 const DUAL_SUBS_BATCH = 40; // 一批幾句：夠給 Gemini 看上下文，又不會一批等太久
-const DUAL_SUBS_CONCURRENCY = 2; // 同時送幾批：Gemini 免費額度有每分鐘次數限制，不要一次全部灌出去
-const DUAL_SUBS_MAX_RETRIES = 2;
+const DUAL_SUBS_WINDOW_SECONDS = 10 * 60; // 一次往後翻多遠
+const DUAL_SUBS_LOOKBACK_SECONDS = 30; // 也順便翻目前位置往前這麼多
+const DUAL_SUBS_PREFETCH_SECONDS = 3 * 60; // 還沒翻的地方離目前位置剩這麼近，就開始翻下一段
+const DUAL_SUBS_FAIL_PAUSE_MS = 15 * 1000; // 一般失敗（網路斷一下）之後，隔多久才再試
+const DUAL_SUBS_BLOCKED_PAUSE_MS = 5 * 60 * 1000; // Google 擋下網路之後，這麼久內不再送（背景另有 30 分鐘冷卻）
 
 let dualSubsEnabled = false;
 let zhByIndex = []; // 跟 sentenceTimeline 一一對應的中文；undefined = 還沒翻好
 let zhJobToken = 0; // 換片、關閉開關時遞增，讓還在路上的舊批次回來時直接作廢
-let zhRetries = 0;
-let zhProgress = { done: 0, total: 0, engine: "", notice: "", running: false };
+let zhBusyToken = -1; // 正在翻的那一段屬於哪個 token；同一時間只翻一段
+let zhPausedUntil = 0; // 失敗或被擋之後，這個時間點之前不再送
+let zhProgress = { engine: "", notice: "", running: false };
 
 function setDualSubs(enabled) {
   dualSubsEnabled = !!enabled;
@@ -1556,8 +1583,10 @@ function setDualSubs(enabled) {
     chrome.storage.local.set({ [DUAL_SUBS_KEY]: dualSubsEnabled });
   } catch (e) {}
   if (dualSubsEnabled) {
-    zhRetries = 0;
-    startDualSubsTranslation();
+    // 使用者自己重新打開 = 想馬上再試一次，不必等失敗後的暫停時間
+    zhPausedUntil = 0;
+    zhProgress.notice = "";
+    ensureDualSubsWindow();
   } else {
     zhJobToken++; // 關掉就停止送新的批次；已經翻好的留著，再打開不用重翻
     zhProgress.running = false;
@@ -1569,8 +1598,8 @@ function setDualSubs(enabled) {
 function resetDualSubs() {
   zhJobToken++;
   zhByIndex = [];
-  zhRetries = 0;
-  zhProgress = { done: 0, total: 0, engine: "", notice: "", running: false };
+  zhPausedUntil = 0;
+  zhProgress = { engine: "", notice: "", running: false };
   syncDualSubsPanel();
 }
 
@@ -1578,84 +1607,99 @@ function describeDualSubs() {
   if (isEnglishCaption() === false) return "目前字幕不是英文，無法使用";
   if (!dualSubsEnabled) return "英文下方同時顯示中文翻譯";
   if (!sentenceTimeline.length) return "等字幕載入後開始翻譯";
-  const engine = zhProgress.engine === "gemini" ? "Gemini" : zhProgress.engine === "google" ? "Google 翻譯" : "";
-  if (zhProgress.running) return `翻譯中… ${zhProgress.done} / ${zhProgress.total} 句`;
+  if (zhProgress.running) return "翻譯中…";
   if (zhProgress.notice) return zhProgress.notice;
-  if (zhProgress.total && zhProgress.done >= zhProgress.total) {
-    return `已翻好 ${zhProgress.total} 句${engine ? "・" + engine : ""}`;
-  }
-  return "英文下方同時顯示中文翻譯";
+
+  const list = sentenceTimeline;
+  const engine = zhProgress.engine === "gemini" ? "・Gemini" : zhProgress.engine === "google" ? "・Google 翻譯" : "";
+  if (list.every((_, i) => zhByIndex[i] !== undefined)) return `已翻好全部 ${list.length} 句${engine}`;
+  // 從目前這句往後數，連續翻好到哪裡
+  const from = Math.max(currentSentenceIndex, 0);
+  let i = from;
+  while (i < list.length && zhByIndex[i] !== undefined) i++;
+  if (i >= list.length) return `已翻好到影片結尾${engine}`;
+  if (i === from) return "邊看邊翻，一次翻 10 分鐘";
+  return `已翻好到 ${formatImmersionTime(Math.floor(list[i].start))}（邊看邊翻）${engine}`;
 }
 
-function startDualSubsTranslation() {
-  zhJobToken++;
-  const token = zhJobToken;
-  const list = sentenceTimeline;
-  if (!dualSubsEnabled || !list.length || isEnglishCaption() === false) {
-    zhProgress.running = false;
-    syncDualSubsPanel();
-    return;
+// 翻譯範圍的起點：「往前 30 秒時正在播的那一句」
+function dualSubsWindowStart(list, t) {
+  return Math.max(0, Sentences.getCurrentSentenceIndex(Math.max(0, t - DUAL_SUBS_LOOKBACK_SECONDS), list));
+}
+
+// 只有「還沒翻的句子」出現在往後 3 分鐘內（或就是目前這句）才需要動手
+function dualSubsNeedsMore(list, t) {
+  for (let i = dualSubsWindowStart(list, t); i < list.length && list[i].start < t + DUAL_SUBS_PREFETCH_SECONDS; i++) {
+    if (zhByIndex[i] === undefined) return true;
   }
+  return false;
+}
 
-  // 目前播到的那一批先翻，之後往後，最後才補前面已經看過的
-  const batchStarts = [];
-  for (let i = 0; i < list.length; i += DUAL_SUBS_BATCH) batchStarts.push(i);
-  const first = Math.floor(Math.max(currentSentenceIndex, 0) / DUAL_SUBS_BATCH);
-  const queue = [...batchStarts.slice(first), ...batchStarts.slice(0, first)];
+// 一動手就翻到 10 分鐘後，播放中大約每 7 分鐘才送一小段
+function dualSubsIndicesToTranslate(list, t) {
+  const out = [];
+  for (let i = dualSubsWindowStart(list, t); i < list.length && list[i].start < t + DUAL_SUBS_WINDOW_SECONDS; i++) {
+    if (zhByIndex[i] === undefined) out.push(i);
+  }
+  return out;
+}
 
-  let failed = 0;
-  zhProgress = {
-    done: list.reduce((n, _, i) => n + (zhByIndex[i] !== undefined ? 1 : 0), 0),
-    total: list.length,
-    engine: zhProgress.engine,
-    notice: "",
-    running: true,
-  };
+// 看目前播到哪裡，需要的話翻「往後 10 分鐘」。
+// 呼叫時機：字幕時間軸載入好、打開開關、播到下一句或跳到別的地方（updateCurrentSentence）。
+// 沒有需要時什麼都不做，所以頻繁呼叫也沒關係。
+async function ensureDualSubsWindow() {
+  const list = sentenceTimeline;
+  if (!dualSubsEnabled || !list.length || isEnglishCaption() === false) return;
+  if (zhBusyToken === zhJobToken) return; // 這一段還在翻，翻完會自己再檢查一次
+  if (Date.now() < zhPausedUntil) return;
+  const video = getVideoEl();
+  const t = video ? video.currentTime : 0;
+  if (!dualSubsNeedsMore(list, t)) return;
+
+  const token = zhJobToken;
+  zhBusyToken = token;
+  const idxs = dualSubsIndicesToTranslate(list, t);
+  zhProgress.running = true;
+  zhProgress.notice = "";
   syncDualSubsPanel();
 
   const title = getVideoTitle();
-  const worker = async () => {
-    while (queue.length) {
-      if (token !== zhJobToken) return;
-      const from = queue.shift();
-      const idxs = [];
-      for (let i = from; i < Math.min(from + DUAL_SUBS_BATCH, list.length); i++) {
-        if (zhByIndex[i] === undefined) idxs.push(i);
+  let failed = false;
+  let blocked = false;
+  try {
+    // 一批接一批送，不同時送好幾批（背景對 Google 另外還有排隊與間隔）
+    for (let k = 0; k < idxs.length; k += DUAL_SUBS_BATCH) {
+      const batch = idxs.slice(k, k + DUAL_SUBS_BATCH);
+      const res = await sendToBackground("subs:translate", { texts: batch.map((i) => list[i].text), title });
+      if (token !== zhJobToken) return; // 換片或關掉了，這段作廢
+      if (res && res.blocked) {
+        // Google 暫時擋下這個網路：停下來，一段時間內不再送（再送只會讓封鎖更久）
+        blocked = true;
+        zhProgress.notice = res.notice || "Google 翻譯暫時限制使用，約 30 分鐘後再試";
+        zhPausedUntil = Date.now() + DUAL_SUBS_BLOCKED_PAUSE_MS;
+        return;
       }
-      if (!idxs.length) continue;
-
-      const res = await sendToBackground("subs:translate", { texts: idxs.map((i) => list[i].text), title });
-      if (token !== zhJobToken) return; // 換片或關掉了，這批作廢
       if (!res || !Array.isArray(res.translations)) {
-        failed++;
-        continue;
+        failed = true;
+        zhProgress.notice = "翻譯失敗，稍後自動再試";
+        zhPausedUntil = Date.now() + DUAL_SUBS_FAIL_PAUSE_MS;
+        return;
       }
-      idxs.forEach((i, k) => (zhByIndex[i] = res.translations[k] || ""));
-      zhProgress.done += idxs.length;
+      batch.forEach((i, j) => (zhByIndex[i] = res.translations[j] || ""));
       zhProgress.engine = res.engine || zhProgress.engine;
       if (res.notice) zhProgress.notice = res.notice;
       renderCaptionBar();
       syncDualSubsPanel();
     }
-  };
-
-  Promise.all(Array.from({ length: DUAL_SUBS_CONCURRENCY }, worker)).then(() => {
-    if (token !== zhJobToken) return;
-    zhProgress.running = false;
-    if (failed) {
-      zhProgress.notice = `有 ${failed} 批翻譯失敗，稍後自動重試`;
-      // 網路短暫斷線之類的：過幾秒只補沒翻到的那幾批
-      if (zhRetries < DUAL_SUBS_MAX_RETRIES) {
-        zhRetries++;
-        setTimeout(() => {
-          if (token === zhJobToken) startDualSubsTranslation();
-        }, 5000);
-      } else {
-        zhProgress.notice = `有 ${failed} 批翻譯失敗，關掉再打開開關可以重試`;
-      }
+  } finally {
+    if (token === zhJobToken) {
+      zhBusyToken = -1;
+      zhProgress.running = false;
+      syncDualSubsPanel();
     }
-    syncDualSubsPanel();
-  });
+  }
+  // 翻這一段的時候，使用者可能已經跳到別的地方了，再檢查一次
+  if (!failed && !blocked && token === zhJobToken) ensureDualSubsWindow();
 }
 
 // 現在這一句的中文。即時記錄模式、或這句還沒翻好時是空字串。

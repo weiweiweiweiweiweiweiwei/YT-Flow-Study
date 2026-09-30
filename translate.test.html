@@ -57,7 +57,10 @@ const realFetch = window.fetch.bind(window);
 window.fetch = async (url, init = {}) => {
   url = String(url);
   if (url.includes("translate.googleapis.com")) {
-    const q = decodeURIComponent(String(init.body).replace(/^q=/, ""));
+    // 雙字幕用 POST（句子在 body），查單字用 GET（字在網址的 q 參數）
+    const q = init.body !== undefined
+      ? decodeURIComponent(String(init.body).replace(/^q=/, ""))
+      : new URL(url).searchParams.get("q");
     calls.push({ engine: "google", q });
     const lines = q.split("\n");
     let out = lines.map(l => "谷歌：" + l).join("\n");
@@ -202,6 +205,68 @@ async function run() {
   check("空句回傳空字串、不送去翻", r.translations[0] === "" && r.translations[1] === "" && r.translations[2] === "谷歌：Real sentence.", JSON.stringify(r.translations));
   r = await T.translateSubtitleBatch({ texts: [] });
   check("空陣列不會出錯", Array.isArray(r.translations) && r.translations.length === 0);
+
+  section("13. ★ Google 暫時擋下這個網路（429 / 異常流量頁）");
+  {
+    await T.setGeminiKey("");
+    let blockGoogle = true;
+    const googleTimes = [];
+    const prevFetch = window.fetch;
+    window.fetch = async (url, init = {}) => {
+      if (String(url).includes("translate.googleapis.com")) {
+        googleTimes.push(Date.now());
+        if (blockGoogle) { calls.push({ engine: "google", blocked: true }); return new Response("<title>Sorry...</title>", { status: 429 }); }
+      }
+      return prevFetch(url, init);
+    };
+
+    calls.length = 0;
+    r = await T.translateSubtitleBatch({ texts: ["Blocked one.", "Blocked two."] });
+    check("雙字幕批次回報 blocked，不丟例外", r.blocked === true && r.translations === null, JSON.stringify(r));
+    check("說明原因（不是「請檢查網路」）", /Google 翻譯暫時限制/.test(r.notice || ""), r.notice);
+    check("記下冷卻時間（約 30 分鐘）", mem[T.GOOGLE_BLOCKED_KEY] - Date.now() > 29 * 60 * 1000, mem[T.GOOGLE_BLOCKED_KEY]);
+    const n = calls.length;
+    r = await T.translateSubtitleBatch({ texts: ["Blocked three."] });
+    check("★ 冷卻期間不再打 Google（打了只會讓封鎖更久）", calls.length === n && r.blocked === true, calls.length - n);
+    check("設定頁看得到「Google 暫時限制」", (await T.getTranslateStatus()).googleBlocked === true);
+
+    let err = null;
+    try { await T.translateWord("everything"); } catch (e) { err = e; }
+    check("查單字：沒有金鑰時丟出看得懂的原因", err && err.kind === "google-blocked" && /Gemini 金鑰/.test(err.message), err && err.message);
+    check("查單字也沒有再打 Google", calls.length === n);
+
+    await T.setGeminiKey("TEST-KEY-123");
+    calls.length = 0;
+    const w = await T.translateWord("everything");
+    check("★ 查單字：有 Gemini 金鑰就改用 Gemini", w === "雙子：everything" && count("gemini") === 1 && count("google") === 0, w);
+    r = await T.translateSubtitleBatch({ texts: ["With a key."] });
+    check("雙字幕：有金鑰照常用 Gemini", r.engine === "gemini" && r.translations[0] === "雙子：With a key.", JSON.stringify(r));
+
+    check("冷卻時間不會寫進備份檔", !(T.GOOGLE_BLOCKED_KEY in (await B.buildBackupSnapshot()).storageLocal));
+
+    // 冷卻期過了：模擬 service worker 重開（重新載入模組、從 storage 讀狀態）
+    await T.setGeminiKey("");
+    blockGoogle = false;
+    mem[T.GOOGLE_BLOCKED_KEY] = Date.now() - 1000;
+    const T2 = await import("./core/translate/subtitleTranslator.js?v=cooldown");
+    googleTimes.length = 0;
+    r = await T2.translateSubtitleBatch({ texts: ["Recovered one."] });
+    check("★ 冷卻期過了自動恢復使用 Google", r.engine === "google" && r.translations[0] === "谷歌：Recovered one.", JSON.stringify(r));
+    const w2 = await T2.translateWord("again");
+    check("查單字也恢復", w2 === "谷歌：again", w2);
+
+    // 整部影片的批次排隊送：一次一批，中間至少隔 1.5 秒
+    googleTimes.length = 0;
+    const t0 = Date.now();
+    await Promise.all([
+      T2.translateSubtitleBatch({ texts: ["Paced batch A."] }),
+      T2.translateSubtitleBatch({ texts: ["Paced batch B."] }),
+    ]);
+    const gap = googleTimes.length === 2 ? googleTimes[1] - googleTimes[0] : -1;
+    check("★ 同時送來兩批，Google 請求還是一次一個、間隔至少 1.4 秒", gap >= 1400, `${gap} ms（共 ${googleTimes.length} 次）`);
+    check("排隊不會卡住：兩批都翻好了", Date.now() - t0 < 6000);
+    window.fetch = prevFetch;
+  }
 }
 
 run().catch(e => { lines.push("\n例外：" + (e && e.stack || e)); fail++; }).finally(() => {

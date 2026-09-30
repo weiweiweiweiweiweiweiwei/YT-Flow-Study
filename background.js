@@ -32,6 +32,7 @@ import { signInWithGoogle, signOut, getCurrentUser, getRedirectUrl } from "./cor
 import { initCloudSync, runCloudSync, scheduleCloudSync, getSyncStatus, clearSyncStatus } from "./cloud-sync.js";
 import {
   translateSubtitleBatch,
+  translateWord,
   testGeminiKey,
   setGeminiKey,
   getTranslateStatus,
@@ -167,10 +168,6 @@ const HANDLERS = {
 
   "video:upsert": (msg) => upsertVideo(msg.payload),
 
-  // 播放器設定面板裡的「首頁」。content script 開不了擴充功能頁面，
-  // 要由背景代為開啟。
-  "open:dashboard": () => chrome.tabs.create({ url: chrome.runtime.getURL("review.html") }),
-
   // 詞彙庫的單字詳細頁。查詢結果會存進 IndexedDB，第二次開同一個字是瞬間顯示。
   "dict:lookup": (msg) => lookupWord(msg.payload.term),
 
@@ -252,10 +249,8 @@ async function translateText(text) {
   }
 
   try {
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-TW&dt=t&q=${encodeURIComponent(text)}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const translated = (data[0] || []).map((chunk) => chunk[0]).join("");
+    // Google 優先；Google 暫時擋下這個網路時改用 Gemini（見 subtitleTranslator.js）
+    const translated = await translateWord(text);
 
     if (!translated) {
       return { original: text, error: "查無翻譯結果" };
@@ -268,6 +263,8 @@ async function translateText(text) {
     return { original: text, translated };
   } catch (err) {
     console.error("翻譯失敗：", err);
+    // 被 Google 擋下跟斷網是兩回事，前者重新整理、重開機都沒用，要講清楚
+    if (err.kind === "google-blocked") return { original: text, error: err.message };
     return { original: text, error: "翻譯失敗，請檢查網路連線" };
   }
 }

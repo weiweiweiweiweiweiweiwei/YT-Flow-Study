@@ -9,6 +9,14 @@
 //             就是查單字那個免金鑰端點；一批句子用換行接起來一次送出，
 //             實測送 7 句拆回 7 句、順序不變。
 //
+// Google 這個免費端點有流量限制：短時間翻太多，Google 會把「整個網路（IP）」擋下來一陣子——
+// 回 429，或把請求導到 google.com/sorry 的「異常流量」頁。2026-09-29 實際發生過：
+// 雙字幕一次翻整部影片、失敗的批次又自動重試，查單字跟雙字幕同時全部失效。
+// 被擋之後再打只會讓封鎖拖更久，所以：
+//   - 偵測到就記下來，冷卻期內（GOOGLE_COOLDOWN_MS）完全不再打 Google
+//   - 冷卻期間查單字改用 Gemini（有金鑰的話）；沒有金鑰就老實告訴使用者原因
+//   - 雙字幕送給 Google 的批次一次只送一批、中間隔一小段時間，不要一口氣灌出去
+//
 // 為什麼整部預先翻，而不是播到哪翻到哪？
 //   字幕一句只停留兩三秒，等翻譯回來那句已經過去了。開啟時一批批送出去，
 //   從「目前播到的地方」先翻（見 content.js），通常一兩秒內畫面上就有中文。
@@ -22,6 +30,9 @@ import { STORES, withStore } from "../storage/db.js";
 
 export const GEMINI_KEY_STORAGE = "flowstudySecretGeminiKey"; // 備份檔會排除 flowstudySecret* 開頭的 key
 export const TRANSLATE_STATUS_KEY = "flowstudyTranslateStatus";
+// Google 被擋到什麼時候（毫秒時間戳）。存在 storage 而不是只放記憶體：
+// service worker 隨時會被關掉重開，只放記憶體的話，重開之後又會馬上去撞。
+export const GOOGLE_BLOCKED_KEY = "flowstudyTranslateGoogleBlockedUntil";
 
 // 跟 VoiceInput 專案實際在用、確定能呼叫的是同一個模型。
 // 伺服器說找不到這個模型（404）時，依序改試後面幾個。
@@ -30,6 +41,11 @@ const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models
 const GOOGLE_ENDPOINT = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t";
 
 const GOOGLE_MAX_CHARS = 4000; // 一次 POST 的上限，保守抓
+const GOOGLE_COOLDOWN_MS = 30 * 60 * 1000; // 被擋之後多久內不再打 Google
+const GOOGLE_BATCH_GAP_MS = 1500; // 雙字幕送給 Google 的批次之間至少隔多久
+
+export const GOOGLE_BLOCKED_MESSAGE =
+  "Google 翻譯暫時限制了這個網路（短時間內翻譯太多次），約 30 分鐘後自動恢復。在學習面板的設定填入 Gemini 金鑰可以馬上恢復";
 const GEMINI_RETRY_AFTER_AUTH_ERROR_MS = 10 * 60 * 1000;
 
 // 金鑰錯誤（400/401/403）時，這段時間內不再打 Gemini，直接用 Google。
@@ -71,15 +87,75 @@ async function writeCache(engine, pairs) {
 
 // ---------- Google ----------
 
-async function googleOnce(joined) {
-  const res = await fetch(GOOGLE_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: "q=" + encodeURIComponent(joined),
-  });
+export class GoogleBlockedError extends Error {
+  constructor() {
+    super(GOOGLE_BLOCKED_MESSAGE);
+    this.kind = "google-blocked";
+  }
+}
+
+let googleBlockedUntil = null; // 記憶體裡的副本；null = 還沒從 storage 讀過
+
+export async function isGoogleBlocked() {
+  if (googleBlockedUntil === null) {
+    try {
+      const data = await chrome.storage.local.get(GOOGLE_BLOCKED_KEY);
+      googleBlockedUntil = Number(data[GOOGLE_BLOCKED_KEY]) || 0;
+    } catch (e) {
+      googleBlockedUntil = 0;
+    }
+  }
+  return Date.now() < googleBlockedUntil;
+}
+
+async function markGoogleBlocked() {
+  googleBlockedUntil = Date.now() + GOOGLE_COOLDOWN_MS;
+  try {
+    await chrome.storage.local.set({ [GOOGLE_BLOCKED_KEY]: googleBlockedUntil });
+  } catch (e) {}
+}
+
+// 所有打 Google 翻譯的請求都走這裡，才能統一認出「被擋了」
+async function googleFetch(url, init) {
+  const res = await fetch(url, init);
+  // fetch 會自動跟著轉址走，被擋時最後停在 google.com/sorry 的頁面（狀態碼 429）
+  if (res.status === 429 || /\/sorry\//.test(res.url)) {
+    await markGoogleBlocked();
+    throw new GoogleBlockedError();
+  }
   if (!res.ok) throw new Error(`Google 翻譯回應 HTTP ${res.status}`);
   const data = await res.json();
   return (data[0] || []).map((chunk) => chunk[0]).join("");
+}
+
+// 雙字幕的批次排隊送：一次一批、前後至少隔 GOOGLE_BATCH_GAP_MS。
+// 查單字不排隊（使用者點下去要馬上看到），只有整部影片的批次需要放慢。
+let googleQueue = Promise.resolve();
+let lastGoogleBatchAt = 0;
+
+function pacedGoogle(task) {
+  const run = googleQueue.then(async () => {
+    const wait = lastGoogleBatchAt + GOOGLE_BATCH_GAP_MS - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    try {
+      return await task();
+    } finally {
+      lastGoogleBatchAt = Date.now();
+    }
+  });
+  googleQueue = run.catch(() => {});
+  return run;
+}
+
+async function googleOnce(joined) {
+  if (await isGoogleBlocked()) throw new GoogleBlockedError();
+  return pacedGoogle(() =>
+    googleFetch(GOOGLE_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "q=" + encodeURIComponent(joined),
+    })
+  );
 }
 
 export async function translateWithGoogle(texts) {
@@ -283,12 +359,39 @@ export async function translateSubtitleBatch({ texts, title = "" } = {}) {
   });
   if (stillMissing.length) {
     const texts2 = stillMissing.map((i) => list[i]);
-    const zh = await translateWithGoogle(texts2);
+    let zh;
+    try {
+      zh = await translateWithGoogle(texts2);
+    } catch (err) {
+      if (err.kind !== "google-blocked") throw err;
+      // 被擋了：回報給畫面，讓它停止送後面的批次，不要再重試（重試只會讓封鎖更久）
+      await saveStatus({ engine: "google", ok: false, error: err.message, blocked: true });
+      return { translations: null, engine: "google", blocked: true, notice: err.message };
+    }
     stillMissing.forEach((i, k) => (result[i] = zh[k]));
     await writeCache("google", texts2.map((t, k) => [t, zh[k]]));
   }
   if (!preferGemini) await saveStatus({ engine: "google", ok: true });
   return { translations: result, engine: usedEngine, notice };
+}
+
+/**
+ * 字幕上點一個字、選一段片語的翻譯。Google 最快，平常用它；
+ * Google 暫時擋下這個網路時，有 Gemini 金鑰就改用 Gemini，沒有就丟出看得懂的原因。
+ */
+export async function translateWord(text) {
+  if (!(await isGoogleBlocked())) {
+    try {
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-TW&dt=t&q=${encodeURIComponent(text)}`;
+      return (await googleFetch(url)).trim();
+    } catch (err) {
+      if (err.kind !== "google-blocked") throw err;
+    }
+  }
+  const apiKey = await getGeminiKey();
+  if (!apiKey) throw new GoogleBlockedError();
+  const [zh] = await translateWithGemini(apiKey, [text], "");
+  return zh;
 }
 
 /** 設定頁的「儲存並測試」：用一句話實際打一次 Gemini，確認金鑰能用。 */
@@ -305,6 +408,7 @@ export async function getTranslateStatus() {
   return {
     hasGeminiKey: !!(data[GEMINI_KEY_STORAGE] && String(data[GEMINI_KEY_STORAGE]).trim()),
     last: data[TRANSLATE_STATUS_KEY] || null,
+    googleBlocked: await isGoogleBlocked(),
   };
 }
 

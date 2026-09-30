@@ -50,7 +50,7 @@ function shouldBackupLocalKey(key) {
   if (key.startsWith("flowstudyBackup")) return false;
   if (key.startsWith("flowstudyAuth") || key.startsWith("flowstudySync")) return false;
   // Gemini API 金鑰之類的祕密，以及翻譯引擎的暫時狀態
-  if (key.startsWith("flowstudySecret") || key === "flowstudyTranslateStatus") return false;
+  if (key.startsWith("flowstudySecret") || key.startsWith("flowstudyTranslate")) return false;
   if (key === "learningWords" || key === "immersion_total_seconds") return false;
   if (/^immersion:\d{4}-\d{2}-\d{2}$/.test(key)) return false;
   return true;

@@ -342,14 +342,9 @@ html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-flexy #colu
   font-variant-numeric: tabular-nums;
 }
 
-/* 面板最下方的主按鈕：回學習面板首頁。
-   原本這個位置是「完成」，但設定一改就生效，「完成」其實只是關視窗——
-   點卡片外面、按 Esc、右上角 × 都能關，所以把最醒目的位置讓給真正會用到的「首頁」。 */
-.fs-modal-home {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+/* 面板最下方的「完成」：設定一改就生效，這顆只是關掉視窗。
+   曾經改成「首頁」，使用者試用後決定換回「完成」，學習面板從工具列的擴充功能圖示進去。 */
+.fs-modal-done {
   width: 100%;
   margin-top: 20px;
   padding: 13px 0;
@@ -362,11 +357,7 @@ html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-flexy #colu
   cursor: pointer;
   font-family: inherit;
 }
-.fs-modal-home svg {
-  width: 18px;
-  height: 18px;
-}
-.fs-modal-home:hover {
+.fs-modal-done:hover {
   background: #2f6fe0;
 }
 
