@@ -228,6 +228,9 @@ export const DEFAULT_SETTINGS = {
 
   theme: "light",
 
+  // 首頁四個區塊由上而下的順序。使用者拖曳左上角的 ⠿ 調整（見 pages/homePage.js）
+  homeBlockOrder: ["overview", "weekly", "habit", "year"],
+
   shortcuts: {
     previousSentence: "a",
     replaySentence: "s",

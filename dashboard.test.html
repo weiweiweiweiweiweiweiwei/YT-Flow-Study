@@ -165,6 +165,7 @@ const txt = () => $(".content-inner").textContent.replace(/\s+/g, " ");
   const todayNewEl = () => $$(".summary-value-num").map(e => e.textContent.trim());
   check("今日新單字 = 5", todayNewEl().includes("5"), todayNewEl().join("/"));
   check("顯示累積收藏", txt().includes("累積收藏"));
+  check("今日新單字不顯示跟昨天比的漲跌（沒有 ▲▼ 百分比）", !$(".delta-badge") && !/[+-]\d+%/.test($$(".summary-section")[1]?.textContent || ""));
 
   section("   學習成效長條圖（固定基準 30）");
   check("7 天", $$(".bar-col").length === 7, $$(".bar-col").length);
@@ -301,6 +302,247 @@ const txt = () => $(".content-inner").textContent.replace(/\s+/g, " ");
     $(".heatmap-scroll").dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
     await settle(80);
     check("移開後提示框消失", $("#heatTooltip").hidden);
+  }
+
+  section("   年度沉浸（一整年一天一格，像 GitHub 貢獻圖）");
+  {
+    const IM = await import("./core/storage/immersionStore.js");
+    const { immersionLevelForMinutes: lvlOf } = await import("./core/analytics/analytics.js");
+    const { toLocalDateKey } = await import("./core/models.js");
+    const now = new Date();
+    const Y = now.getFullYear();
+    const daysInYear = (y) => Math.round((new Date(y + 1, 0, 1) - new Date(y, 0, 1)) / 86400000);
+    const minutesByDate = async (y) => {
+      const rows = await IM.getSessionsBetween(new Date(y, 0, 1).toISOString(), new Date(y, 11, 31, 23, 59, 59, 999).toISOString());
+      const map = {};
+      for (const s of rows) { const k = toLocalDateKey(s.startedAt); map[k] = (map[k] || 0) + (s.watchedSeconds || 0) / 60; }
+      return map;
+    };
+    const cellDate = (y, i) => toLocalDateKey(new Date(y, 0, 1 + i));
+
+    const yc = $("#yearCard");
+    check("★ 標題是「年度沉浸」（拿掉了「紀錄」）", !!yc && yc.querySelector(".heatmap-title")?.textContent.trim() === "年度沉浸",
+      yc && yc.querySelector(".heatmap-title")?.textContent.trim());
+    const blockIds = $$(".home-stack > .home-block").map(b => b.dataset.block).join(",");
+    check("預設排在沉浸習慣下面、底部留白上面",
+      blockIds === "overview,weekly,habit,year" && yc.closest(".home-block")?.dataset.block === "year" &&
+      $(".home-stack").lastElementChild.classList.contains("home-bottom-spacer"), blockIds);
+    check("沉浸習慣（5 週）照舊保留", $$(".heatmap-cell").length > 0 && $$(".heatmap-col-label").length === 5);
+
+    const weeks = Number(getComputedStyle($("#yearCard .year-grid")).getPropertyValue("--weeks"));
+    const dayCells = $$("#yearCard .year-cell:not(.is-out)");
+    check(`★ 今年每一天一格（${daysInYear(Y)} 格）`, dayCells.length === daysInYear(Y), dayCells.length);
+    check("53 或 54 直行（一直行 = 一週）", weeks === 53 || weeks === 54, weeks);
+    check("7 列，左邊標週一／週三／週五",
+      $$("#yearCard .year-dow").map(e => e.textContent).join(",") === "週一,,週三,,週五,,",
+      $$("#yearCard .year-dow").map(e => e.textContent).join(","));
+    check("上方標 1 月到 12 月",
+      $$("#yearCard .year-month").map(e => e.textContent).join(",") === Array.from({ length: 12 }, (_, i) => `${i + 1}月`).join(","));
+    const gridKids = [...$("#yearCard .year-grid").children];
+    const jan1 = $('#yearCard .year-cell[data-i="0"]');
+    const jan1Pos = gridKids.indexOf(jan1);
+    check("1 月 1 日在第一直行、正確的星期那一列",
+      jan1Pos % (weeks + 1) === 1 && Math.floor(jan1Pos / (weeks + 1)) === (new Date(Y, 0, 1).getDay() + 6) % 7,
+      `第 ${Math.floor(jan1Pos / (weeks + 1))} 列、第 ${jan1Pos % (weeks + 1)} 格`);
+    const monthLabel = $$("#yearCard .year-month")[now.getMonth()];
+    const labelRect = monthLabel.getBoundingClientRect();
+    const firstOfMonthIdx = Math.round((new Date(Y, now.getMonth(), 1) - new Date(Y, 0, 1)) / 86400000);
+    const firstRect = $(`#yearCard .year-cell[data-i="${firstOfMonthIdx}"]`).getBoundingClientRect();
+    check("這個月的月份標籤對齊在 1 號附近（相差不到兩格）",
+      Math.abs(labelRect.left - firstRect.left) <= firstRect.width * 2 + 6,
+      `標籤 x=${Math.round(labelRect.left)}，1 號 x=${Math.round(firstRect.left)}`);
+
+    const mins = await minutesByDate(Y);
+    const todayKey = toLocalDateKey(now);
+    const wrong = dayCells.filter(c => {
+      const key = cellDate(Y, Number(c.dataset.i));
+      if (key > todayKey) return !(c.classList.contains("is-future") && c.classList.contains("l0"));
+      return !c.classList.contains("l" + lvlOf(mins[key] || 0));
+    });
+    check("★ 每一格的顏色都跟那天實際的分鐘數一致（今天以後是空格）", wrong.length === 0,
+      wrong.slice(0, 3).map(c => cellDate(Y, Number(c.dataset.i)) + ":" + c.className).join(" / "));
+    check("有顏色的格子真的有畫出來", dayCells.some(c => /\bl[1-4]\b/.test(c.className)));
+
+    const totalMin = Object.values(mins).reduce((a, b) => a + b, 0);
+    const expectTotal = Math.round(totalMin) >= 60
+      ? `${Math.floor(Math.round(totalMin) / 60)} 小時 ${Math.round(totalMin) % 60} 分` : `${Math.round(totalMin)} 分鐘`;
+    const activeDays = Object.values(mins).filter(v => v > 0).length;
+    check("下方顯示今年總時數與天數", $("#yearCard .year-summary").textContent === `${Y} 年共沉浸 ${expectTotal}・${activeDays} 天`,
+      $("#yearCard .year-summary").textContent);
+
+    const doy = Math.round((new Date(Y, now.getMonth(), now.getDate()) - new Date(Y, 0, 1)) / 86400000);
+    const todayCell = $(`#yearCard .year-cell[data-i="${doy}"]`);
+    todayCell.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    await settle(100);
+    const ytip = $("#yearTooltip");
+    const ytipText = (ytip?.textContent || "").replace(/\s+/g, " ").trim();
+    check("滑上格子顯示日期與星期", !ytip.hidden && ytipText.startsWith(`${now.getMonth() + 1}月${now.getDate()}日 週`), ytipText);
+    check("提示框顯示那天的分鐘數", ytipText.includes(`${Math.round(mins[todayKey] || 0)} 分鐘`), ytipText);
+    check("提示框浮在格子正上方", ytip.getBoundingClientRect().bottom <= todayCell.getBoundingClientRect().top + 1);
+    check("提示框不在捲動容器內（不會被裁掉）", !$("#yearCard .year-scroll").contains(ytip));
+
+    // ---- 年份切換 ----
+    const firstYear = new Date(await IM.getFirstSessionDate()).getFullYear();
+    const expectYears = []; for (let y = Y; y >= firstYear; y--) expectYears.push(String(y));
+    check("右邊列出有紀錄以來的每一年（今年在最上面）",
+      $$("#yearCard .year-btn").map(b => b.textContent).join(",") === expectYears.join(","),
+      $$("#yearCard .year-btn").map(b => b.textContent).join(","));
+    check("今年是選中的（藍底）", $("#yearCard .year-btn.is-active")?.textContent === String(Y));
+
+    // 兩年前的一筆 70 分鐘，模擬「往回看」
+    const old = createImmersionSession({ videoId: "VIDOLD", videoTitle: "舊影片", startedAt: new Date(Y - 2, 5, 15, 20).toISOString() });
+    old.watchedSeconds = 70 * 60; old.endedAt = old.startedAt;
+    await put(STORES.IMMERSION_SESSIONS, old);
+    $('[data-view="home"]').click();
+    await settle(700);
+    check("★ 有更早的紀錄後，年份清單往回延伸（中間沒資料的年份也列出來）",
+      $$("#yearCard .year-btn").map(b => b.textContent).join(",") === [Y, Y - 1, Y - 2].map(String).join(","),
+      $$("#yearCard .year-btn").map(b => b.textContent).join(","));
+
+    const overview = $(".goal-card");
+    $$("#yearCard .year-btn").find(b => b.textContent === String(Y - 2)).click();
+    await settle(400);
+    check("★ 點兩年前 → 顯示那一年", $("#yearCard .year-btn.is-active")?.textContent === String(Y - 2) &&
+      $("#yearCard .year-summary").textContent.startsWith(`${Y - 2} 年`), $("#yearCard .year-summary").textContent);
+    check(`那一年 ${daysInYear(Y - 2)} 格、全部是過去（沒有空白的未來格）`,
+      $$("#yearCard .year-cell:not(.is-out)").length === daysInYear(Y - 2) && !$("#yearCard .year-cell.is-future"));
+    const oldIdx = Math.round((new Date(Y - 2, 5, 15) - new Date(Y - 2, 0, 1)) / 86400000);
+    check("6 月 15 日（70 分鐘）是最深的綠", $(`#yearCard .year-cell[data-i="${oldIdx}"]`)?.classList.contains("l4"));
+    const oldMins = await minutesByDate(Y - 2);
+    const oldTotal = Math.round(Object.values(oldMins).reduce((a, b) => a + b, 0));
+    check("總時數只算那一年", $("#yearCard .year-summary").textContent ===
+      `${Y - 2} 年共沉浸 ${Math.floor(oldTotal / 60)} 小時 ${oldTotal % 60} 分・${Object.values(oldMins).filter(v => v > 0).length} 天`,
+      $("#yearCard .year-summary").textContent);
+    check("切年份只重畫這張卡片，上面的卡片沒有被重畫", $(".goal-card") === overview);
+
+    $$("#yearCard .year-btn").find(b => b.textContent === String(Y)).click();
+    await settle(400);
+    check("點回今年", $("#yearCard .year-btn.is-active")?.textContent === String(Y) && !!$(`#yearCard .year-cell[data-i="${doy}"]`));
+    $$("#yearCard .year-btn").find(b => b.textContent === String(Y - 1)).click();
+    await settle(400);
+    $('[data-view="settings"]').click(); await settle(300);
+    $('[data-view="home"]').click(); await settle(700);
+    check("切到別頁再回首頁，停在剛才選的年份", $("#yearCard .year-btn.is-active")?.textContent === String(Y - 1));
+    $$("#yearCard .year-btn").find(b => b.textContent === String(Y)).click();
+    await settle(400);
+  }
+
+  section("   首頁區塊：拖曳左上角的 ⠿ 調整上下順序");
+  {
+    const order = () => $$(".home-stack > .home-block").map(b => b.dataset.block).join(",");
+    const saved = () => JSON.stringify(mem.flowstudySettings && mem.flowstudySettings.homeBlockOrder);
+    const aligned = () => {
+      const head = $(".page-header").getBoundingClientRect();
+      return $$(".home-block").every(b => {
+        const r = b.getBoundingClientRect();
+        return Math.abs(r.left - head.left) < 0.5 && Math.abs(r.right - head.right) < 0.5;
+      });
+    };
+    const pointer = (type, target, x, y) => target.dispatchEvent(new PointerEvent(type, {
+      pointerId: 7, isPrimary: true, button: 0, clientX: x, clientY: y, bubbles: true }));
+    const dragHandle = async (id, toY, { cancel = false } = {}) => {
+      const handle = $(`.home-block[data-block="${id}"] .home-block-handle`);
+      const r = handle.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      pointer("pointerdown", handle, x, r.top + 10);
+      const step = toY < r.top ? -40 : 40;
+      for (let y = r.top + 10; step < 0 ? y > toY : y < toY; y += step) { pointer("pointermove", window, x, y); await settle(16); }
+      pointer("pointermove", window, x, toY); await settle(30);
+      if (cancel) window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      else pointer("pointerup", window, x, toY);
+      await settle(320);
+    };
+
+    check("四個區塊，預設順序：每日目標 → 學習成效 → 沉浸習慣 → 年度沉浸", order() === "overview,weekly,habit,year", order());
+    const handles = $$(".home-block-handle");
+    check("每個區塊都有一個 ⠿ 把手（跟字幕條左上角同一個符號）",
+      handles.length === 4 && handles.every(h => h.textContent.trim() === "⠿"));
+    check("把手平常看不到", handles.every(h => getComputedStyle(h).opacity === "0"));
+    check("★ 區塊左右邊界跟頁面標題完全對齊（把手沒有把區塊往右推）", aligned());
+    const firstBlock = $(".home-block").getBoundingClientRect();
+    const h0 = handles[0].getBoundingClientRect();
+    check("★ 把手在區塊左邊的留白裡，不在區塊範圍內",
+      h0.right <= firstBlock.left + 0.5 && h0.left >= $(".content").getBoundingClientRect().left,
+      `把手 ${Math.round(h0.left)}–${Math.round(h0.right)}，區塊從 ${Math.round(firstBlock.left)} 開始`);
+
+    // ---- 滑鼠靠近左上角才浮現 ----
+    const yearBlock = $('.home-block[data-block="year"]');
+    const yr = yearBlock.getBoundingClientRect();
+    // 測試分頁在背景時，瀏覽器會凍結 CSS 過渡動畫，opacity 會一直停在起點。
+    // 關掉這顆把手的淡入淡出，檢查的才是「最後會變成多少」而不是「動畫卡在哪」。
+    const yearHandleEl = yearBlock.querySelector(".home-block-handle");
+    yearHandleEl.style.transition = "none";
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: yr.left + 12, clientY: yr.top + 10, bubbles: true }));
+    await settle(260);
+    check("★ 滑鼠靠近「年度沉浸」左上角 → 它的把手浮現",
+      yearBlock.classList.contains("is-near") && getComputedStyle(yearBlock.querySelector(".home-block-handle")).opacity === "1");
+    check("只有最靠近的那一個區塊亮出把手", $$(".home-block.is-near").length === 1);
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: yr.left - 18, clientY: yr.top + 26, bubbles: true }));
+    await settle(60);
+    check("滑鼠移到左邊留白裡的把手上，把手還在", yearBlock.classList.contains("is-near"));
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: yr.left + yr.width / 2, clientY: yr.top + yr.height / 2, bubbles: true }));
+    await settle(260);
+    check("滑鼠移到區塊中間 → 把手收起來", !yearBlock.classList.contains("is-near") &&
+      getComputedStyle(yearBlock.querySelector(".home-block-handle")).opacity === "0");
+    yearHandleEl.style.transition = "";
+
+    // ---- 拖曳 ----
+    const yHandle = yearBlock.querySelector(".home-block-handle");
+    const yh = yHandle.getBoundingClientRect();
+    pointer("pointerdown", yHandle, yh.left + 8, yh.top + 10);
+    check("按住把手 → 區塊浮起來、原位留下虛線框",
+      yearBlock.classList.contains("is-lifted") && !!$(".home-block-placeholder") &&
+      getComputedStyle(yearBlock).position === "fixed");
+    check("虛線框跟區塊一樣高", Math.abs($(".home-block-placeholder").getBoundingClientRect().height - yr.height) < 1);
+    const savedBefore = saved();
+    pointer("pointerup", window, yh.left + 8, yh.top + 10);
+    await settle(320);
+    check("原地放開：順序不變、設定也沒有被改動", order() === "overview,weekly,habit,year" && saved() === savedBefore, saved());
+
+    await dragHandle("year", $('.home-block[data-block="overview"]').getBoundingClientRect().top - 30);
+    check("★ 把年度沉浸拖到最上面", order() === "year,overview,weekly,habit", order());
+    check("放開後回到版面：沒有殘留浮起狀態、虛線框、行內樣式",
+      !$(".home-block.is-lifted") && !$(".home-block-placeholder") && $$(".home-block").every(b => !b.getAttribute("style")));
+    check("★ 新的順序存進設定", saved() === JSON.stringify(["year", "overview", "weekly", "habit"]), saved());
+    check("拖完之後每個區塊依然置中對齊", aligned());
+
+    await dragHandle("overview", $('.home-block[data-block="habit"]').getBoundingClientRect().bottom + 30);
+    check("把每日目標往下拖到最後", order() === "year,weekly,habit,overview", order());
+
+    await dragHandle("weekly", $('.home-block[data-block="year"]').getBoundingClientRect().top - 30, { cancel: true });
+    check("★ 拖到一半按 Esc：放棄，區塊回原位", order() === "year,weekly,habit,overview", order());
+    check("放棄不會寫入設定", saved() === JSON.stringify(["year", "weekly", "habit", "overview"]), saved());
+    check("放棄後也沒有殘留", !$(".home-block.is-lifted") && !$(".home-block-placeholder"));
+
+    // ---- 重新進首頁，順序保留，其他功能照常 ----
+    $('[data-view="settings"]').click(); await settle(300);
+    $('[data-view="home"]').click(); await settle(700);
+    check("★ 切到別頁再回來，順序保留", order() === "year,weekly,habit,overview", order());
+    check("換了順序，年度沉浸的年份按鈕、提示框照常運作", !!$("#yearCard .year-btn.is-active") && !!$("#yearTooltip"));
+    check("換了順序，每日目標的倒數照常運作", /\d\d:\d\d/.test($(".goal-remaining-value")?.textContent || ""));
+
+    // ---- 鍵盤：焦點在把手上按上下鍵 ----
+    const wHandle = $('.home-block[data-block="weekly"] .home-block-handle');
+    wHandle.focus();
+    wHandle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    await settle(250);
+    check("鍵盤：學習成效按上鍵往上一格", order() === "weekly,year,habit,overview", order());
+    check("移動後焦點還在同一個把手上（可以連續按）", document.activeElement === wHandle);
+    wHandle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    await settle(250);
+    check("已經在最上面，再按上鍵不會出錯", order() === "weekly,year,habit,overview", order());
+    check("鍵盤調整也會存起來", saved() === JSON.stringify(["weekly", "year", "habit", "overview"]), saved());
+
+    // ---- 存了奇怪的順序（舊版、少一個、重複）也能正常顯示 ----
+    await S.saveSettings({ homeBlockOrder: ["habit", "habit", "bogus"] });
+    $('[data-view="settings"]').click(); await settle(300);
+    $('[data-view="home"]').click(); await settle(700);
+    check("存的順序缺東缺西時：認得的照順序、缺的照預設補在後面", order() === "habit,overview,weekly,year", order());
+
+    // 還原預設，後面的測試照原本的版面跑
+    await S.saveSettings({ homeBlockOrder: ["overview", "weekly", "habit", "year"] });
+    $('[data-view="settings"]').click(); await settle(300);
+    $('[data-view="home"]').click(); await settle(700);
   }
 
   section("   底部留白（可把最後一塊捲到畫面中央）");

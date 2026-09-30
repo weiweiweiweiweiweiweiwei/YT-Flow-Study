@@ -72,6 +72,7 @@
   --logo-tile-ring: rgba(15, 23, 42, 0.08);
 
   --topbar-bg: var(--card-bg);
+  --lift-shadow: 0 14px 36px rgba(15, 23, 42, 0.18); /* 首頁區塊被拖起來時 */
   --primary-fill: var(--primary); /* 填滿色、上面放白字的地方（徽章、按鈕） */
   --success-text: #16a34a;
   --btn-bg: var(--card-bg);
@@ -95,6 +96,7 @@ html[data-theme="dark"] {
   --sidebar-bg: #010409;
   --sidebar-border: #3d444d;
   --topbar-bg: #010409;
+  --lift-shadow: 0 14px 36px rgba(0, 0, 0, 0.6);
 
   --text-primary: #f0f6fc;
   --text-strong: #f0f6fc;
@@ -596,28 +598,6 @@ body {
 }
 
 /* 相較上週的變化率 */
-.delta-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 10px;
-  border-radius: 12px;
-  font-size: 15px;
-  font-weight: 700;
-}
-.delta-badge svg {
-  width: 16px;
-  height: 16px;
-}
-.delta-badge.up {
-  background: var(--emerald-bg);
-  color: var(--emerald-text);
-}
-.delta-badge.down {
-  background: var(--red-bg);
-  color: var(--red-text);
-}
-
 .summary-breakdown {
   display: flex;
   flex-wrap: wrap;
@@ -756,12 +736,210 @@ body {
   background: transparent;
 }
 
+/* ---------- 首頁：年度沉浸紀錄（GitHub 貢獻圖） ---------- */
+
+.year-card {
+  position: relative; /* 提示框以整張卡片為定位基準 */
+  padding: 20px 24px;
+}
+.year-head {
+  margin-bottom: 14px;
+}
+.year-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+.year-main {
+  flex: 1;
+  min-width: 0;
+}
+/* 格子跟著卡片寬度等比縮放（每格至少 9px），太窄時改成左右捲動而不是擠成一團 */
+.year-scroll {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.year-months,
+.year-grid {
+  display: grid;
+  grid-template-columns: 30px repeat(var(--weeks), minmax(9px, 1fr));
+  column-gap: 3px;
+  min-width: calc(30px + var(--weeks) * 12px);
+}
+.year-months {
+  height: 16px;
+  margin-bottom: 4px;
+}
+.year-month {
+  grid-row: 1;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.year-grid {
+  row-gap: 3px;
+}
+.year-dow {
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.year-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--heat-0);
+}
+.year-cell.l1 { background: var(--heat-1); }
+.year-cell.l2 { background: var(--heat-2); }
+.year-cell.l3 { background: var(--heat-3); }
+.year-cell.l4 { background: var(--heat-4); }
+/* 不屬於這一年的格子：保留位置讓整張圖對齊，但不顯示 */
+.year-cell.is-out {
+  visibility: hidden;
+}
+.year-cell:not(.is-out):not(.is-future):hover {
+  box-shadow: 0 0 0 1px var(--card-bg), 0 0 0 2px var(--ring-color);
+}
+
+.year-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.year-summary strong {
+  color: var(--text-strong);
+  font-weight: 700;
+}
+
+/* 右側的年份清單：跟 GitHub 一樣，選中的那一年是藍底白字 */
+.year-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  width: 84px;
+}
+.year-btn {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.year-btn:hover {
+  background: var(--hairline);
+  color: var(--text-primary);
+}
+.year-btn.is-active {
+  background: var(--primary-fill);
+  color: #fff;
+}
+
+/* 窄視窗：年份改成橫排放在圖的上方 */
+@media (max-width: 760px) {
+  .year-body {
+    flex-direction: column-reverse;
+  }
+  .year-list {
+    flex-direction: row;
+    width: auto;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
 /* ---------- 首頁：學習成效長條圖 ---------- */
 
 .home-stack {
+  position: relative; /* 區塊的 offsetTop 以這裡為準，拖曳時用它判斷區塊該放哪 */
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+/* ---------- 首頁：區塊拖曳排序（左上角的 ⠿） ---------- */
+
+.home-block {
+  position: relative;
+}
+/* 把手掛在區塊左邊的留白裡（left 是負的），不佔區塊寬度，區塊維持置中。
+   符號與粗細跟字幕條左上角的 ⠿ 一樣；平常透明，滑鼠靠近區塊左上角（is-near）才浮現。 */
+.home-block-handle {
+  position: absolute;
+  top: 12px;
+  left: -30px;
+  width: 22px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: -2px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none; /* 觸控拖曳時，不要被瀏覽器拿去捲動頁面 */
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.home-block.is-near > .home-block-handle,
+.home-block.is-lifted > .home-block-handle,
+.home-block-handle:focus-visible {
+  opacity: 1;
+}
+.home-block-handle:hover {
+  color: var(--text-primary);
+  background: var(--hairline);
+}
+.home-block-handle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+/* 拖曳中：浮起來的區塊加深陰影；整頁游標維持「抓著」，也不會選到文字 */
+.home-block.is-lifted > .card,
+.home-block.is-lifted > .overview-grid > .card {
+  box-shadow: var(--lift-shadow);
+}
+html.home-block-dragging,
+html.home-block-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+/* 區塊浮起來之後，原位留下的虛線框 */
+.home-block-placeholder {
+  flex-shrink: 0;
+  border: 2px dashed var(--primary-border);
+  border-radius: 12px;
+  background: var(--primary-bg);
+}
+@media (max-width: 900px) {
+  /* 窄視窗的左右留白只剩 20px，把手縮一點才放得下 */
+  .home-block-handle {
+    left: -20px;
+    width: 18px;
+  }
 }
 
 /* 底部留白：讓最後一張卡片也能被捲到畫面正中央。

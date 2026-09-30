@@ -1,10 +1,11 @@
 // ============================================================================
 // 首頁
 // ============================================================================
-// 由上而下三個區塊：
-//   1. 每日目標（大數字 + 進度條 + 今日剩餘倒數）與 總沉浸時數 / 總詞彙量
-//   2. 學習成效 —— 最近 7 天每天沉浸幾分鐘的長條圖
-//   3. 沉浸習慣 —— 最近 5 週的方格圖，顏色深淺用固定分鐘門檻
+// 四個區塊（預設由上而下；使用者可以拖曳左上角的 ⠿ 自由調整順序）：
+//   1. 每日目標（大數字 + 進度條 + 今日剩餘倒數）與 總沉浸時數 / 今日新單字
+//   2. 學習成效 —— 最近 7 天每天沉浸幾分鐘的長條圖（看這一週）
+//   3. 沉浸習慣 —— 最近 5 週的方格圖，顏色深淺用固定分鐘門檻（看這個月）
+//   4. 年度沉浸 —— 一整年一天一格，跟 GitHub 貢獻圖一樣；右邊可以切換年份（看一整年）
 //
 // 刻意沒有做的（使用者明確表示不要）：
 //   學習秘訣橫幅、跟讀模式、連續達標膠囊、詞彙量的綠色長條、
@@ -18,12 +19,14 @@ import {
   getFirstSessionDate,
 } from "../core/storage/immersionStore.js";
 import { getAllWords } from "../core/storage/vocabularyStore.js";
-import { getSettings } from "../core/storage/settingsStore.js";
+import { getSettings, saveSettings } from "../core/storage/settingsStore.js";
 import {
   aggregateDailyStats,
   calculateImmersionHabits,
+  immersionLevelForMinutes,
   IMMERSION_LEVEL_THRESHOLDS,
 } from "../core/analytics/analytics.js";
+import { toLocalDateKey } from "../core/models.js";
 
 // 5 週 ≈ 一個月。使用者要的是「大致掌握這一個月的趨勢」，
 // 拉到半年或一年對剛開始使用的人只會是一大片灰色。
@@ -47,8 +50,7 @@ const ICONS = {
   book: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`,
   dots: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>`,
-  up: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/></svg>`,
-  down: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 17h6v-6"/><path d="m22 17-8.5-8.5-5 5L2 7"/></svg>`,
+  calendar: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/></svg>`,
   target: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>`,
 };
 
@@ -116,6 +118,11 @@ export async function renderHomePage(root) {
       getFirstSessionDate(),
     ]);
 
+    // 年度沉浸：可選的年份 = 最早一筆紀錄那年到今年。之前切到哪一年就停在哪一年
+    const years = selectableYears(firstSessionAt, now);
+    if (!years.includes(selectedYear)) selectedYear = years[0];
+    const yearData = await loadYearData(selectedYear);
+
     const dailyStats = aggregateDailyStats({
       sessions,
       reviewEvents: [],
@@ -129,13 +136,19 @@ export async function renderHomePage(root) {
     // 這正是使用者最需要知道「可以從備份救回來」的時刻，所以直接在首頁提示。
     const isEmpty = words.length === 0 && totalSeconds === 0;
 
+    const blockHtml = {
+      overview: renderOverview({ todaySeconds, totalSeconds, words, goalMinutes, now }),
+      weekly: renderWeeklyChart(dailyStats),
+      habit: renderHeatmap(habits, start),
+      year: renderYearCard(yearData, years, now),
+    };
+    const order = normalizeBlockOrder(settings.homeBlockOrder);
+
     root.innerHTML = `<div class="home-stack">
       ${isEmpty ? renderRestoreNotice() : ""}
-      ${renderOverview({ todaySeconds, totalSeconds, words, goalMinutes, now })}
-      ${renderWeeklyChart(dailyStats)}
-      ${renderHeatmap(habits, start)}
+      ${order.map((id) => wrapBlock(id, blockHtml[id])).join("")}
       <!-- 底部留白：讓最後一張卡片也能被捲到畫面正中央來看。
-           沒有這段的話，沉浸習慣永遠只能停在螢幕最下緣。 -->
+           沒有這段的話，最下面那張卡片永遠只能停在螢幕最下緣。 -->
       <div class="home-bottom-spacer" aria-hidden="true"></div>
     </div>`;
 
@@ -156,6 +169,8 @@ export async function renderHomePage(root) {
 
     bindChartTooltip(root);
     bindHeatmapTooltip(root, weekStartDates, studyStart);
+    bindYearCard(root.querySelector("#yearCard"), yearData, years);
+    initBlockReorder(root.querySelector(".home-stack"));
     startCountdown(root);
   } catch (err) {
     console.error("[FlowStudy] 首頁載入失敗：", err);
@@ -172,30 +187,16 @@ function renderOverview({ todaySeconds, totalSeconds, words, goalMinutes, now })
 
   // 「今天標記了幾個新單字」。每天從 0 開始重新累積——
   // 累計總量只會一路往上，看久了沒有感覺；今天的數字才會讓人想再多學一個。
+  // 刻意不跟昨天比（不顯示漲跌百分比）：每天學幾個字本來就起伏很大，
+  // 「比昨天 -50%」只會讓人有壓力，對學習沒有幫助。
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
-  const startOfYesterday = new Date(startOfToday);
-  startOfYesterday.setDate(startOfYesterday.getDate() - 1);
 
   let todayNew = 0;
-  let yesterdayNew = 0;
   for (const w of words) {
-    const t = new Date(w.createdAt).getTime();
     // 只看 createdAt。複習動作不會改動這個欄位，
     // 所以「今日新單字」永遠不會因為複習而往下掉。
-    if (t >= startOfToday.getTime()) todayNew++;
-    else if (t >= startOfYesterday.getTime()) yesterdayNew++;
-  }
-
-  // 跟昨天比。昨天是 0 的話不顯示變化率——除以零沒有意義，
-  // 而且「昨天沒學、今天學了 3 個」硬要說成 +300% 只是灌水。
-  let deltaHtml = "";
-  if (yesterdayNew > 0) {
-    const delta = Math.round(((todayNew - yesterdayNew) / yesterdayNew) * 100);
-    const up = delta >= 0;
-    deltaHtml = `<span class="delta-badge ${up ? "up" : "down"}" title="相較昨天">
-      ${up ? ICONS.up : ICONS.down}${up ? "+" : ""}${delta}%
-    </span>`;
+    if (new Date(w.createdAt).getTime() >= startOfToday.getTime()) todayNew++;
   }
 
   return `
@@ -241,9 +242,8 @@ function renderOverview({ todaySeconds, totalSeconds, words, goalMinutes, now })
           <span class="summary-label">今日新單字</span>
           <span class="summary-icon emerald">${ICONS.book}</span>
         </div>
-        <div class="summary-value" style="gap:14px;flex-wrap:wrap">
+        <div class="summary-value">
           <span class="summary-value-num">${todayNew}</span>
-          ${deltaHtml}
         </div>
         <div class="summary-breakdown">
           <span class="summary-breakdown-item">
@@ -482,6 +482,478 @@ function bindHeatmapTooltip(root, weekStartDates, studyStartIso) {
   scroll.addEventListener("mouseleave", () => {
     tip.hidden = true;
   });
+}
+
+// ---------- 年度沉浸（GitHub 貢獻圖的樣子）----------
+//
+// 沉浸習慣只看最近 5 週，一過就看不到了。這張一次攤開一整年、一天一格，
+// 看的是「這一年的沉浸有沒有斷斷續續」。右邊的年份清單可以切到往年。
+//
+// 版型照 GitHub：一直行是一週、上方標月份、左邊標週一／週三／週五。
+// 跟 GitHub 不同的是一週從週一開始（跟上面的沉浸習慣一致），顏色深淺也沿用同一組分鐘門檻，
+// 兩張圖的同一天一定是同一個顏色。
+
+const YEAR_DOW_LABELS = ["週一", "", "週三", "", "週五", "", ""];
+const WEEKDAY_BY_GETDAY = ["週日", "週一", "週二", "週三", "週四", "週五", "週六"];
+const DAY_MS = 24 * 3600 * 1000;
+
+// 使用者切到哪一年。在首頁、記憶固化、設定之間切換時保留，重新開啟面板才回到今年
+let selectedYear = null;
+
+function selectableYears(firstSessionAt, now = new Date()) {
+  const current = now.getFullYear();
+  const firstYear = firstSessionAt ? new Date(firstSessionAt).getFullYear() : current;
+  const years = [];
+  for (let y = current; y >= Math.min(firstYear, current); y--) years.push(y);
+  return years;
+}
+
+async function loadYearData(year) {
+  const start = new Date(year, 0, 1, 0, 0, 0, 0);
+  const end = new Date(year, 11, 31, 23, 59, 59, 999);
+  const sessions = await getSessionsBetween(start.toISOString(), end.toISOString());
+  const stats = aggregateDailyStats({
+    sessions,
+    reviewEvents: [],
+    words: [],
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+  });
+  const days = stats.map((d) => {
+    const minutes = d.immersionSeconds / 60;
+    return { date: d.date, minutes, level: immersionLevelForMinutes(minutes) };
+  });
+  return {
+    year,
+    days,
+    totalSeconds: stats.reduce((sum, d) => sum + d.immersionSeconds, 0),
+    activeDays: days.filter((d) => d.minutes > 0).length,
+  };
+}
+
+function formatMinutesLong(minutes) {
+  if (minutes <= 0) return "沒有沉浸紀錄";
+  if (minutes < 1) return "不到 1 分鐘";
+  const m = Math.round(minutes);
+  return m < 60 ? `${m} 分鐘` : `${Math.floor(m / 60)} 小時 ${m % 60} 分`;
+}
+
+function renderYearCard(data, years, now = new Date()) {
+  const { year, days } = data;
+  const jan1 = new Date(year, 0, 1);
+  const offset = (jan1.getDay() + 6) % 7; // 1 月 1 日落在那一週的第幾格（週一 = 0）
+  const weeks = Math.ceil((offset + days.length) / 7);
+  const todayKey = toLocalDateKey(now);
+
+  // 月份標籤放在「這個月 1 號所在的那一週」上方。
+  // 1 號如果是週五到週日，那一直行大半還是上個月，標籤就往後挪一格，看起來才對得上。
+  const months = [];
+  for (let m = 0; m < 12; m++) {
+    const cellIndex = offset + Math.round((new Date(year, m, 1) - jan1) / DAY_MS);
+    const col = Math.floor(cellIndex / 7) + (cellIndex % 7 >= 4 ? 1 : 0);
+    months.push(`<span class="year-month" style="grid-column:${col + 2} / span 4">${m + 1}月</span>`);
+  }
+
+  // 依「列（星期）」輸出，每一列 = 星期標籤 + 每一週一格。
+  // 年初與年末不屬於這一年的格子保留位置但不顯示，整張圖才是對齊的長方形。
+  let cells = "";
+  for (let dow = 0; dow < 7; dow++) {
+    cells += `<span class="year-dow">${YEAR_DOW_LABELS[dow]}</span>`;
+    for (let w = 0; w < weeks; w++) {
+      const i = w * 7 + dow - offset;
+      const day = i >= 0 ? days[i] : null;
+      if (!day) {
+        cells += `<span class="year-cell is-out"></span>`;
+        continue;
+      }
+      const future = day.date > todayKey;
+      cells += `<span class="year-cell l${future ? 0 : day.level}${future ? " is-future" : ""}" data-i="${i}"></span>`;
+    }
+  }
+
+  const { h, m } = formatTotalTime(data.totalSeconds);
+  const total = h > 0 ? `${h} 小時 ${m} 分` : `${m} 分鐘`;
+  const t = IMMERSION_LEVEL_THRESHOLDS;
+  const legendTitles = [
+    `不足 ${t[0]} 分鐘`,
+    `${t[0]}–${t[1]} 分鐘`,
+    `${t[1]}–${t[2]} 分鐘`,
+    `${t[2]}–${t[3]} 分鐘`,
+    `${t[3]} 分鐘以上`,
+  ];
+
+  return `
+  <div class="card year-card" id="yearCard">
+    <div class="year-head">
+      <span class="heatmap-title">${ICONS.calendar} 年度沉浸</span>
+    </div>
+    <div class="year-body">
+      <div class="year-main">
+        <div class="year-scroll">
+          <div class="year-months" style="--weeks:${weeks}">${months.join("")}</div>
+          <div class="year-grid" style="--weeks:${weeks}">${cells}</div>
+        </div>
+        <div class="year-foot">
+          <span class="year-summary">${year} 年共沉浸 <strong>${total}</strong>・${data.activeDays} 天</span>
+          <span class="heatmap-legend">
+            少
+            ${legendTitles.map((title, i) => `<i class="l${i}" title="${escapeHtml(title)}"></i>`).join("")}
+            多
+          </span>
+        </div>
+      </div>
+      <nav class="year-list" aria-label="選擇年份">
+        ${years
+          .map(
+            (y) =>
+              `<button type="button" class="year-btn${y === year ? " is-active" : ""}" data-year="${y}" aria-pressed="${y === year}">${y}</button>`
+          )
+          .join("")}
+      </nav>
+    </div>
+    <!-- 提示框放在捲動容器外面，理由同沉浸習慣：放在裡面，最上排的提示框會被裁掉 -->
+    <div class="heatmap-tooltip" id="yearTooltip" hidden></div>
+  </div>`;
+}
+
+function bindYearCard(card, data, years) {
+  if (!card) return;
+  const scroll = card.querySelector(".year-scroll");
+  const tip = card.querySelector("#yearTooltip");
+
+  scroll.addEventListener("mouseover", (e) => {
+    const cell = e.target.closest(".year-cell");
+    if (!cell || cell.classList.contains("is-out") || cell.classList.contains("is-future")) return;
+    const day = data.days[Number(cell.dataset.i)];
+    if (!day) return;
+
+    const [y, mo, d] = day.date.split("-").map(Number);
+    const weekday = WEEKDAY_BY_GETDAY[new Date(y, mo - 1, d).getDay()];
+    tip.innerHTML = `
+      <div class="heatmap-tooltip-title">${mo}月${d}日 ${weekday}</div>
+      <div class="heatmap-tooltip-sub">${escapeHtml(formatMinutesLong(day.minutes))}</div>`;
+    tip.hidden = false;
+
+    const box = card.getBoundingClientRect();
+    const rect = cell.getBoundingClientRect();
+    const left = rect.left - box.left + rect.width / 2 - tip.offsetWidth / 2;
+    tip.style.left = Math.max(4, Math.min(left, box.width - tip.offsetWidth - 4)) + "px";
+    tip.style.top = rect.top - box.top - tip.offsetHeight - 8 + "px";
+  });
+  scroll.addEventListener("mouseleave", () => {
+    tip.hidden = true;
+  });
+
+  // 切換年份：只重畫這一張卡片，上面三張不動，也不會跳回頁面頂端
+  card.querySelector(".year-list").addEventListener("click", async (e) => {
+    const btn = e.target.closest(".year-btn");
+    if (!btn || btn.classList.contains("is-active")) return;
+    selectedYear = Number(btn.dataset.year);
+    try {
+      const next = await loadYearData(selectedYear);
+      const holder = document.createElement("div");
+      holder.innerHTML = renderYearCard(next, years);
+      const fresh = holder.firstElementChild;
+      card.replaceWith(fresh);
+      bindYearCard(fresh, next, years);
+    } catch (err) {
+      console.error("[FlowStudy] 年度沉浸載入失敗：", err);
+    }
+  });
+}
+
+// ---------- 首頁區塊：拖曳左上角的 ⠿ 調整上下順序 ----------
+//
+// 四個區塊哪個放上面由使用者決定，順序存在設定裡（flowstudySettings.homeBlockOrder），
+// 重新打開面板、從備份還原都會保留。
+//
+// 把手「⠿」跟字幕條左上角那個是同一個符號，平常看不到，滑鼠靠近區塊左上角才浮現。
+// 把手用 absolute 掛在區塊「左邊的留白」裡，不佔區塊的寬度——
+// 排進版面的話，區塊會被往右推一點點，就不再置中了。
+//
+// 拖曳用 pointer 事件自己做，不用 HTML5 的 drag and drop：原生拖曳只會拖著一張
+// 半透明截圖走，放開之前看不出其他區塊會怎麼讓位。這裡是整個區塊浮起來跟著滑鼠走，
+// 原位留一個虛線框，其他區塊即時滑開讓出位置。
+
+const HOME_BLOCKS = [
+  { id: "overview", label: "每日目標" },
+  { id: "weekly", label: "學習成效" },
+  { id: "habit", label: "沉浸習慣" },
+  { id: "year", label: "年度沉浸" },
+];
+const HOME_BLOCK_IDS = HOME_BLOCKS.map((b) => b.id);
+const HANDLE_REVEAL_RADIUS = 72; // 滑鼠離區塊左上角多近（px），把手才浮現
+const REORDER_ANIM_MS = 180;
+const AUTO_SCROLL_EDGE = 70; // 拖到離可視範圍上下緣這麼近時，頁面自動捲動
+const AUTO_SCROLL_MAX_SPEED = 18; // 每一幀最多捲幾 px
+
+let blockDrag = null; // 拖曳中的狀態；null = 沒有在拖
+let blockDragSettling = false; // 放開後區塊正滑回版面的那一小段時間，不接受新的拖曳
+let revealBound = false;
+let lastPointer = null;
+
+// 存起來的順序可能是舊版的、缺了某個區塊、或有重複——整理成「每個區塊剛好一次」，
+// 認不得的丟掉，缺的照預設順序補在最後。
+function normalizeBlockOrder(saved) {
+  const valid = Array.isArray(saved)
+    ? saved.filter((id, i, arr) => HOME_BLOCK_IDS.includes(id) && arr.indexOf(id) === i)
+    : [];
+  return [...valid, ...HOME_BLOCK_IDS.filter((id) => !valid.includes(id))];
+}
+
+function wrapBlock(id, html) {
+  const label = HOME_BLOCKS.find((b) => b.id === id).label;
+  return `<div class="home-block" data-block="${id}">
+    <button class="home-block-handle" type="button" title="拖曳調整順序"
+            aria-label="調整「${label}」的位置：拖曳，或按上下鍵">⠿</button>
+    ${html}
+  </div>`;
+}
+
+function blocksIn(stack) {
+  return [...stack.querySelectorAll(":scope > .home-block")];
+}
+
+function currentBlockOrder(stack) {
+  return blocksIn(stack).map((b) => b.dataset.block);
+}
+
+async function saveBlockOrder(order) {
+  try {
+    await saveSettings({ homeBlockOrder: order });
+  } catch (err) {
+    console.error("[FlowStudy] 首頁區塊順序儲存失敗：", err);
+  }
+}
+
+function initBlockReorder(stack) {
+  if (!stack) return;
+  for (const handle of stack.querySelectorAll(".home-block-handle")) {
+    handle.addEventListener("pointerdown", (e) => startBlockDrag(e, handle, stack));
+    handle.addEventListener("keydown", (e) => moveBlockByKey(e, handle, stack));
+  }
+  // 「靠近左上角」的範圍包含區塊左邊的留白，那裡已經在首頁容器外面了，所以掛在 document 上。
+  // 只掛一次：每次回到首頁都會重畫區塊，但這個監聽器是找當下畫面上的區塊，不需要重掛。
+  // 每次移動直接算（只讀 4 個區塊的位置，成本很低），不排進 requestAnimationFrame——
+  // 分頁在背景時瀏覽器會暫停 animation frame，排進去就等不到了。
+  if (!revealBound) {
+    revealBound = true;
+    document.addEventListener(
+      "mousemove",
+      (e) => {
+        lastPointer = { x: e.clientX, y: e.clientY };
+        updateHandleReveal();
+      },
+      { passive: true }
+    );
+  }
+}
+
+// 只讓「離滑鼠最近、而且夠近」的那一個區塊亮出把手
+function updateHandleReveal() {
+  if (!lastPointer || blockDrag) return;
+  const blocks = document.querySelectorAll(".home-block");
+  let nearest = null;
+  let best = Infinity;
+  for (const block of blocks) {
+    const r = block.getBoundingClientRect();
+    if (!r.width) continue; // 首頁目前沒在畫面上（切到別頁了）
+    const d = Math.hypot(lastPointer.x - r.left, lastPointer.y - r.top);
+    if (d < best) {
+      best = d;
+      nearest = block;
+    }
+  }
+  for (const block of blocks) {
+    block.classList.toggle("is-near", block === nearest && best <= HANDLE_REVEAL_RADIUS);
+  }
+}
+
+// FLIP：先記下每個區塊現在畫在哪裡，改完 DOM 之後，讓它們從舊位置滑到新位置
+function animateReflow(elements, mutate) {
+  const before = new Map(elements.map((el) => [el, el.getBoundingClientRect().top]));
+  mutate();
+  for (const el of elements) {
+    const dy = before.get(el) - el.getBoundingClientRect().top;
+    if (Math.abs(dy) < 0.5) continue;
+    el.style.transition = "none";
+    el.style.transform = `translateY(${dy}px)`;
+    el.getBoundingClientRect(); // 讓瀏覽器先套用起點，下一步的動畫才會真的播出來
+    el.style.transition = `transform ${REORDER_ANIM_MS}ms ease`;
+    el.style.transform = "";
+  }
+}
+
+function startBlockDrag(e, handle, stack) {
+  if (blockDrag || blockDragSettling || e.button !== 0) return;
+  e.preventDefault(); // 拖曳時不要選到文字
+  const block = handle.closest(".home-block");
+  const rect = block.getBoundingClientRect();
+
+  // 原位留一個一樣高的虛線框，版面才不會因為區塊浮起來而整個往上縮
+  const placeholder = document.createElement("div");
+  placeholder.className = "home-block-placeholder";
+  placeholder.style.height = rect.height + "px";
+  block.before(placeholder);
+
+  // 浮起來：改成 fixed 跟著滑鼠走，寬度鎖住，離開版面也不會變寬變窄
+  Object.assign(block.style, {
+    position: "fixed",
+    left: rect.left + "px",
+    top: rect.top + "px",
+    width: rect.width + "px",
+    zIndex: "50",
+  });
+  block.classList.add("is-lifted");
+  document.documentElement.classList.add("home-block-dragging");
+  try {
+    handle.setPointerCapture(e.pointerId);
+  } catch (err) {}
+
+  blockDrag = {
+    stack,
+    block,
+    handle,
+    placeholder,
+    pointerId: e.pointerId,
+    offsetY: e.clientY - rect.top,
+    pointerY: e.clientY,
+    startOrder: currentBlockOrder(stack),
+    scrollFrame: 0,
+  };
+  // 掛在 window 上：就算指標捕捉失敗、滑鼠跑出把手範圍，也收得到移動與放開
+  window.addEventListener("pointermove", onBlockDragMove);
+  window.addEventListener("pointerup", onBlockDragEnd);
+  window.addEventListener("pointercancel", onBlockDragCancel);
+  window.addEventListener("keydown", onBlockDragKey, true);
+  blockDrag.scrollFrame = requestAnimationFrame(autoScrollWhileDragging);
+}
+
+function onBlockDragMove(e) {
+  if (!blockDrag || e.pointerId !== blockDrag.pointerId) return;
+  blockDrag.pointerY = e.clientY;
+  blockDrag.block.style.top = blockDrag.pointerY - blockDrag.offsetY + "px";
+  placeBlockPlaceholder();
+}
+
+// 虛線框該放在哪：往上拖時，看浮起區塊的「上緣」有沒有越過別人的中線；往下拖時看「下緣」。
+// 不用中心點：區塊很高，中心點離左上角的把手很遠，實測拖到別的區塊上面了還不會換位。
+// 比的是版面位置（offsetTop），不是畫面上正在滑動中的位置——
+// 用後者的話，判斷結果會跟著讓位動畫一起抖。
+function placeBlockPlaceholder() {
+  const { stack, block, placeholder } = blockDrag;
+  const others = blocksIn(stack).filter((b) => b !== block);
+  const top = blockDrag.pointerY - blockDrag.offsetY - stack.getBoundingClientRect().top;
+  const bottom = top + block.offsetHeight;
+  // 第一個「該排在浮起區塊下面」的區塊，虛線框就插在它前面
+  const target =
+    others.find((b) => {
+      const mid = b.offsetTop + b.offsetHeight / 2;
+      return b.offsetTop < placeholder.offsetTop ? top < mid : bottom <= mid;
+    }) || null;
+
+  // 虛線框現在後面接的是哪個區塊（跳過還待在原位、已經浮起來的那個）
+  let next = placeholder.nextElementSibling;
+  while (next && !(next.classList.contains("home-block") && next !== block)) {
+    next = next.classList.contains("home-bottom-spacer") ? null : next.nextElementSibling;
+  }
+  if (next === target) return;
+
+  animateReflow(others, () => {
+    stack.insertBefore(placeholder, target || stack.querySelector(":scope > .home-bottom-spacer"));
+  });
+}
+
+// 拖到可視範圍的上緣或下緣時自動捲動，才能把最下面的區塊一路拖到最上面。
+// 上緣從頂欄下方算起（頂欄是黏在上面的，底下的內容看不到）。
+function autoScrollWhileDragging() {
+  if (!blockDrag) return;
+  const topbar = document.querySelector(".topbar");
+  const top = (topbar ? topbar.getBoundingClientRect().bottom : 0) + AUTO_SCROLL_EDGE;
+  const bottom = window.innerHeight - AUTO_SCROLL_EDGE;
+  const y = blockDrag.pointerY;
+  let dy = 0;
+  if (y < top) dy = -((top - y) / AUTO_SCROLL_EDGE) * AUTO_SCROLL_MAX_SPEED;
+  else if (y > bottom) dy = ((y - bottom) / AUTO_SCROLL_EDGE) * AUTO_SCROLL_MAX_SPEED;
+  if (dy) {
+    const before = window.scrollY;
+    window.scrollBy(0, Math.max(-AUTO_SCROLL_MAX_SPEED, Math.min(AUTO_SCROLL_MAX_SPEED, Math.round(dy))));
+    if (window.scrollY !== before) placeBlockPlaceholder();
+  }
+  blockDrag.scrollFrame = requestAnimationFrame(autoScrollWhileDragging);
+}
+
+function onBlockDragEnd(e) {
+  if (!blockDrag || e.pointerId !== blockDrag.pointerId) return;
+  finishBlockDrag(false);
+}
+
+function onBlockDragCancel(e) {
+  if (!blockDrag || e.pointerId !== blockDrag.pointerId) return;
+  finishBlockDrag(true);
+}
+
+// 拖到一半按 Esc：放棄，區塊回到原位
+function onBlockDragKey(e) {
+  if (!blockDrag || e.key !== "Escape") return;
+  e.preventDefault();
+  e.stopPropagation();
+  finishBlockDrag(true);
+}
+
+function finishBlockDrag(cancelled) {
+  const d = blockDrag;
+  blockDrag = null;
+  blockDragSettling = true;
+  cancelAnimationFrame(d.scrollFrame);
+  window.removeEventListener("pointermove", onBlockDragMove);
+  window.removeEventListener("pointerup", onBlockDragEnd);
+  window.removeEventListener("pointercancel", onBlockDragCancel);
+  window.removeEventListener("keydown", onBlockDragKey, true);
+  try {
+    d.handle.releasePointerCapture(d.pointerId);
+  } catch (err) {}
+
+  const others = blocksIn(d.stack).filter((b) => b !== d.block);
+  if (cancelled) {
+    // 浮起來的區塊在 DOM 裡一直待在原位，虛線框放回它前面就是原本的位置
+    animateReflow(others, () => d.block.before(d.placeholder));
+  }
+
+  // 浮起的區塊滑進虛線框，滑到了再真正放回版面
+  const target = d.placeholder.getBoundingClientRect();
+  d.block.style.transition = `top ${REORDER_ANIM_MS}ms ease, left ${REORDER_ANIM_MS}ms ease`;
+  d.block.style.top = target.top + "px";
+  d.block.style.left = target.left + "px";
+
+  setTimeout(() => {
+    d.placeholder.replaceWith(d.block);
+    d.block.removeAttribute("style");
+    d.block.classList.remove("is-lifted");
+    for (const b of others) b.removeAttribute("style");
+    document.documentElement.classList.remove("home-block-dragging");
+    blockDragSettling = false;
+    const order = currentBlockOrder(d.stack);
+    if (order.join() !== d.startOrder.join()) saveBlockOrder(order);
+    updateHandleReveal();
+  }, REORDER_ANIM_MS);
+}
+
+// 鍵盤操作：焦點在把手上時，按上下鍵把區塊往上／往下移一格
+function moveBlockByKey(e, handle, stack) {
+  if (blockDrag || blockDragSettling || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+  e.preventDefault(); // 不要捲動頁面
+  const blocks = blocksIn(stack);
+  const block = handle.closest(".home-block");
+  const i = blocks.indexOf(block);
+  const j = e.key === "ArrowUp" ? i - 1 : i + 1;
+  if (j < 0 || j >= blocks.length) return;
+  // 搬的是「旁邊那個區塊」而不是自己：焦點所在的元素一被搬動，鍵盤焦點就會掉
+  animateReflow(blocks, () => {
+    if (e.key === "ArrowUp") block.after(blocks[j]);
+    else block.before(blocks[j]);
+  });
+  saveBlockOrder(currentBlockOrder(stack));
 }
 
 function startCountdown(root) {
