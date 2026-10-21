@@ -137,9 +137,13 @@ html.flowstudy-native-caption-lookup .ytp-caption-segment::selection {
 /* 沉浸模式開啟時，隱藏右側推薦影片欄位，專注在字幕上。
    刻意排除全螢幕模式（.zerostudy-fullscreen）：全螢幕下 YouTube 自己的版面
    計算方式不同，強制 display:none 這個欄位會跟它自己的版面邏輯打架、跑版。 */
+/* html.flowstudy-wide 是齒輪裡的「隱藏推薦影片」：版面一樣，但不計時、不換字幕 */
 html.zerostudy-immersion-active:not(.zerostudy-fullscreen) #secondary,
 html.zerostudy-immersion-active:not(.zerostudy-fullscreen) #related,
-html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-next-secondary-results-renderer {
+html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-next-secondary-results-renderer,
+html.flowstudy-wide:not(.zerostudy-fullscreen) #secondary,
+html.flowstudy-wide:not(.zerostudy-fullscreen) #related,
+html.flowstudy-wide:not(.zerostudy-fullscreen) ytd-watch-next-secondary-results-renderer {
   display: none !important;
 }
 /* 推薦欄藏起來之後，播放器會撐到接近整個視窗寬。播放器背後的「劇院光暈」
@@ -147,7 +151,8 @@ html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-next-second
    整頁多出一條水平捲軸、可以左右晃——看起來就是「版面怪怪的」。
    用 clip 把超出的部分裁掉：它不像 overflow:hidden 會產生捲動容器，
    所以 YouTube 的黏性標題列、垂直捲動都不受影響。 */
-html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-flexy #columns {
+html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-flexy #columns,
+html.flowstudy-wide:not(.zerostudy-fullscreen) ytd-watch-flexy #columns {
   overflow-x: clip;
 }
 
@@ -342,6 +347,38 @@ html.zerostudy-immersion-active:not(.zerostudy-fullscreen) ytd-watch-flexy #colu
   font-variant-numeric: tabular-nums;
 }
 
+/* 二選一的切換鈕（字幕長度：完整句子／一行短句）。外框跟加減調整器同一套樣式，
+   選中的那一格浮起來變白，一眼看出現在是哪個模式 */
+.fs-segment {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f1f5f9;
+}
+.fs-seg-btn {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  font-family: inherit;
+}
+.fs-seg-btn:hover:not(.is-active) {
+  color: #0f172a;
+}
+.fs-seg-btn.is-active {
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
 /* 面板最下方的「完成」：設定一改就生效，這顆只是關掉視窗。
    曾經改成「首頁」，使用者試用後決定換回「完成」，學習面板從工具列的擴充功能圖示進去。 */
 .fs-modal-done {
@@ -441,8 +478,18 @@ html.flowstudy-overlay-on .ytp-caption-window-container {
    JS 那邊已經在按鈕點擊、頁面初始化、SPA 換片三個時機都會同步狀態，
    但只要有任何一條路徑漏掉，使用者就會看到「沉浸模式明明關了，字幕條還卡在畫面上」。
    用 CSS 再擋一層，這個綁定就跟 JS 的執行時機完全無關，不可能出錯。 */
-html:not(.zerostudy-immersion-active) #flowstudy-caption-bar {
+html:not(.zerostudy-immersion-active):not(.flowstudy-zh-only) #flowstudy-caption-bar {
   display: none !important;
+}
+
+/* 純中文字幕：英文那一行藏起來，中文放大成主字幕（跟英文字幕一樣大、一樣白） */
+html.flowstudy-zh-only .flowstudy-caption-text {
+  display: none;
+}
+html.flowstudy-zh-only .flowstudy-caption-zh {
+  font-size: calc(22px * var(--flowstudy-caption-scale, 1));
+  color: #fff;
+  line-height: 1.45;
 }
 
 .flowstudy-caption-bar {
@@ -452,6 +499,10 @@ html:not(.zerostudy-immersion-active) #flowstudy-caption-bar {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  /* width: max-content 不能省：字幕條用 left: 50% 定位，沒指定寬度時瀏覽器只給它
+     「容器寬度減掉 left」＝播放器的一半，88% 的上限永遠用不到，長句就被擠成三行。
+     改成「內容多寬就多寬，最多 88%」，同樣一句話行數變少，短句模式量的一行寬度也才對得上 */
+  width: max-content;
   max-width: 88%;
   padding: 10px 16px;
   border-radius: 12px;

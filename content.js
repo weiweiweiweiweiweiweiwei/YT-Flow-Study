@@ -103,10 +103,12 @@ function getVideoEl() {
 let pointerOverCaption = false;
 
 function onCaptionPointerEnter() {
-  // 使用者自己關掉了這個行為，或這部影片的字幕不是英文
-  if (!hoverPauseEnabled || !isLearningEnabled()) return;
+  // 使用者自己關掉了這個行為，或這部影片的字幕不是英文。
+  // 純中文字幕是看內容不是學英文，滑過字幕不該停下來
+  if (!hoverPauseEnabled || !isLearningEnabled() || zhOnlyMode) return;
   const video = getVideoEl();
   if (video && !video.paused) {
+    releasePlaybackIntent();
     wasPlayingBeforeHover = true;
     video.pause();
   }
@@ -117,6 +119,7 @@ function onCaptionPointerLeave() {
   if (actionPaused) return; // 使用者點了單字或選取了片語，先不要自動續播
   const video = getVideoEl();
   if (video && wasPlayingBeforeHover && video.paused) {
+    releasePlaybackIntent();
     video.play().catch(() => {});
   }
   wasPlayingBeforeHover = false;
@@ -160,7 +163,10 @@ document.addEventListener(
       //
       // 只認主要的影片元素：YouTube 頁面上還有推薦影片縮圖的預覽 video，
       // 那些自動播放時不應該把使用者正在讀的翻譯關掉。
-      if (e.target === getVideoEl()) closeBox();
+      if (e.target === getVideoEl()) {
+        closeBox();
+        enforcePlaybackIntent(e.target);
+      }
     }
   },
   true
@@ -168,7 +174,9 @@ document.addEventListener(
 document.addEventListener(
   "pause",
   (e) => {
-    if (e.target.tagName === "VIDEO") syncMediaSessionPlaybackState();
+    if (e.target.tagName !== "VIDEO") return;
+    syncMediaSessionPlaybackState();
+    if (e.target === getVideoEl()) enforcePlaybackIntent(e.target);
   },
   true
 );
@@ -199,6 +207,26 @@ function syncMediaSessionPlaybackState() {
 let lastMediaToggleAt = 0;
 const MEDIA_TOGGLE_DEBOUNCE_MS = 250;
 
+// 「這一下按鍵想要的結果」：按下去的瞬間決定是要播還是要停，之後短時間內守住它。
+//
+// 2026-10 使用者回報：播放中按空白鍵會「瞬間暫停又繼續播」，暫停時按則「瞬間播放又停回去」。
+// 這是同一次按鍵被切換了兩次——我們切一次，頁面上還有別的程式（YouTube 某些版本、
+// 或其他影片類擴充功能）也切了一次。它們可能掛在比我們更早的地方，或在放開按鍵時才動作，
+// 光靠擋事件傳遞擋不乾淨，也沒辦法知道使用者的電腦上裝了什麼。
+// 所以換個方向：不管是誰把它切回去，只要在這一下按鍵的守護時間內，就再切回使用者要的狀態。
+let playbackIntent = null; // { paused: 想要的狀態, until: 守到什麼時候, fixes: 已經救回幾次 }
+const PLAYBACK_INTENT_GUARD_MS = 500;
+
+function applyPlayback(video, wantPaused) {
+  if (wantPaused) {
+    actionPaused = true;
+    video.pause();
+  } else {
+    actionPaused = false;
+    video.play().catch(() => {});
+  }
+}
+
 function toggleVideoPlayback() {
   const now = Date.now();
   if (now - lastMediaToggleAt < MEDIA_TOGGLE_DEBOUNCE_MS) return;
@@ -207,13 +235,27 @@ function toggleVideoPlayback() {
   const video = getVideoEl();
   if (!video) return;
 
-  if (video.paused) {
-    actionPaused = false;
-    video.play().catch(() => {});
-  } else {
-    actionPaused = true;
-    video.pause();
-  }
+  const wantPaused = !video.paused;
+  playbackIntent = { paused: wantPaused, until: now + PLAYBACK_INTENT_GUARD_MS, fixes: 0 };
+  applyPlayback(video, wantPaused);
+}
+
+// 主影片的 play / pause 事件都會呼叫這裡：守護時間內被別人切回去，就再切回來。
+// 最多救 3 次，避免跟另一個也很固執的程式無限拉鋸。
+function enforcePlaybackIntent(video) {
+  const intent = playbackIntent;
+  if (!intent || Date.now() > intent.until || intent.fixes >= 3) return;
+  if (video.paused === intent.paused) return;
+  intent.fixes++;
+  // 等這一輪事件跑完再切，不要在對方的 play()/pause() 進行到一半時插隊
+  setTimeout(() => {
+    if (playbackIntent === intent && video.paused !== intent.paused) applyPlayback(video, intent.paused);
+  }, 0);
+}
+
+// 我們自己的程式（查單字、懸停暫停）要改變播放狀態時，先放掉守護，不然會被當成「別人切回去」
+function releasePlaybackIntent() {
+  playbackIntent = null;
 }
 
 function claimMediaSessionHandlers() {
@@ -367,6 +409,7 @@ function doLookup(text, rect, sentence) {
   if (!isLearningEnabled()) return;
 
   const video = getVideoEl();
+  releasePlaybackIntent(); // 剛按空白鍵播放、馬上點單字：這次暫停是使用者要的，不要被救回去
   if (video && !video.paused) {
     video.pause();
   }
@@ -391,7 +434,7 @@ document.addEventListener("click", (e) => {
   if (!e.target.classList.contains("my-word")) return;
   const sel = window.getSelection();
   if (sel && sel.toString().trim().length > 0) return; // 使用者其實是在選取片語，不當作單字點擊
-  const sentence = e.target.closest(CAPTION_TEXT_SELECTOR)?.textContent?.trim() || "";
+  const sentence = getCaptionSentenceContext(e.target);
   doLookup(e.target.textContent, e.target.getBoundingClientRect(), sentence);
 });
 
@@ -432,7 +475,7 @@ document.addEventListener("mouseup", (e) => {
   const words = Array.from(captionArea.querySelectorAll(".my-word")).filter((el) =>
     range.intersectsNode(el)
   );
-  const sentence = e.target.closest(CAPTION_TEXT_SELECTOR)?.textContent?.trim() || "";
+  const sentence = getCaptionSentenceContext(e.target);
 
   if (words.length === 0) {
     const text = sel.toString().trim();
@@ -748,7 +791,7 @@ function updateCurrentSentence() {
     return;
   }
 
-  const idx = Sentences.getCurrentSentenceIndex(video.currentTime, list);
+  const idx = Sentences.getCurrentSentenceIndex(video.currentTime + NAV_PROBE_SECONDS, list);
   if (idx !== currentSentenceIndex) {
     currentSentenceIndex = idx;
     renderSentenceChip();
@@ -759,21 +802,27 @@ function updateCurrentSentence() {
 
 // ---------- 句子導覽動作 ----------
 
-function seekToSentence(index, list) {
+// 判斷「現在在哪一句／哪一行」時，往後多看 0.1 秒。
+// 跳到某句時會往前退 0.06 秒（見 seekToTime），那一瞬間的播放時間其實還落在「上一句」裡：
+// 不加這一點，連按兩下 a 會跳過一句，畫面也會先閃一下上一句。
+const NAV_PROBE_SECONDS = 0.1;
+
+function navProbeTime() {
   const video = getVideoEl();
-  const sentences = list || activeSentences();
-  if (!video || !sentences.length) return false;
+  return (video ? video.currentTime : 0) + NAV_PROBE_SECONDS;
+}
 
-  const clamped = Math.max(0, Math.min(index, sentences.length - 1));
-  const target = sentences[clamped];
-  if (!target) return false;
-
+// 跳到某個時間點（某一句或某一行的開頭），並把「目前第幾句」直接設好
+function seekToTime(time, sentenceIndex) {
+  const video = getVideoEl();
+  if (!video) return false;
   // 往前退 60 毫秒。YouTube 的 seek 會對齊到最近的關鍵影格，
   // 剛好落在句首時偶爾會吃掉第一個音節，退一點點比較保險。
-  video.currentTime = Math.max(0, target.start - 0.06);
-  currentSentenceIndex = clamped;
+  video.currentTime = Math.max(0, time - 0.06);
+  currentSentenceIndex = sentenceIndex;
   renderSentenceChip();
 
+  releasePlaybackIntent(); // 按 a/s/d 是新的指令，蓋過剛才空白鍵的那一下
   if (video.paused) {
     actionPaused = false; // 使用者主動導覽，解除「查字後不要自動續播」的狀態
     video.play().catch(() => {});
@@ -781,30 +830,81 @@ function seekToSentence(index, list) {
   return true;
 }
 
+function seekToSentence(index, list) {
+  const sentences = list || activeSentences();
+  if (!sentences.length) return false;
+  const clamped = Math.max(0, Math.min(index, sentences.length - 1));
+  const target = sentences[clamped];
+  if (!target) return false;
+  return seekToTime(target.start, clamped);
+}
+
+// a/s/d 要以「畫面上看到的那一塊」為單位：
+//   完整句子模式 → 一塊 = 一整句
+//   一行短句模式 → 一塊 = 一行（一句話有五個逗號就切成六塊，按 a 是回到上一塊，不是回到上一整句）
+// 字幕條沒顯示的時候（沒開沉浸模式）畫面上是 YouTube 原生字幕，照整句跳。
+function navByLine() {
+  return captionShortLines && shouldShowCaptionOverlay();
+}
+
+// 目前在哪一句的第幾行
+function currentLineInfo(list, t) {
+  const si = Sentences.getCurrentSentenceIndex(t, list);
+  if (si < 0) return null;
+  const lines = getShortLines(list, si);
+  let k = 0;
+  while (k + 1 < lines.length && lines[k + 1].start <= t) k++;
+  return { si, k, lines };
+}
+
 function goToPreviousSentence() {
   const sentences = activeSentences();
   if (!sentences.length) return false;
-  const idx = Sentences.getCurrentSentenceIndex(getVideoEl()?.currentTime ?? 0, sentences);
-  if (idx <= 0) {
-    // 已經在第一句（或還沒播到第一句）：跳到影片開頭，比完全沒反應合理
-    const video = getVideoEl();
-    if (video) video.currentTime = 0;
+  const t = navProbeTime();
+
+  if (navByLine()) {
+    const info = currentLineInfo(sentences, t);
+    if (info && info.k > 0) return seekToTime(info.lines[info.k - 1].start, info.si);
+    if (info && info.si > 0) {
+      const prevLines = getShortLines(sentences, info.si - 1);
+      return seekToTime(prevLines[prevLines.length - 1].start, info.si - 1);
+    }
     return seekToSentence(0, sentences);
   }
-  return seekToSentence(idx - 1, sentences);
+
+  const idx = Sentences.getCurrentSentenceIndex(t, sentences);
+  // 已經在第一句（或還沒播到第一句）：回到第一句開頭，比完全沒反應合理
+  return seekToSentence(Math.max(0, idx - 1), sentences);
 }
 
 function replayCurrentSentence() {
   const sentences = activeSentences();
   if (!sentences.length) return false;
-  const idx = Sentences.getCurrentSentenceIndex(getVideoEl()?.currentTime ?? 0, sentences);
+  const t = navProbeTime();
+
+  if (navByLine()) {
+    const info = currentLineInfo(sentences, t);
+    if (info) return seekToTime(info.lines[info.k].start, info.si);
+    return seekToSentence(0, sentences);
+  }
+
+  const idx = Sentences.getCurrentSentenceIndex(t, sentences);
   return seekToSentence(idx < 0 ? 0 : idx, sentences);
 }
 
 function goToNextSentence() {
   const sentences = activeSentences();
   if (!sentences.length) return false;
-  const idx = Sentences.getCurrentSentenceIndex(getVideoEl()?.currentTime ?? 0, sentences);
+  const t = navProbeTime();
+
+  if (navByLine()) {
+    const info = currentLineInfo(sentences, t);
+    if (!info) return seekToSentence(0, sentences);
+    if (info.k + 1 < info.lines.length) return seekToTime(info.lines[info.k + 1].start, info.si);
+    return seekToSentence(Math.min(info.si + 1, sentences.length - 1), sentences);
+  }
+
+  const idx = Sentences.getCurrentSentenceIndex(t, sentences);
   return seekToSentence(idx < 0 ? 0 : Math.min(idx + 1, sentences.length - 1), sentences);
 }
 
@@ -832,7 +932,12 @@ function isInteractiveControl(el) {
   return !!el.closest('button, a[href], [role="button"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="switch"], [role="option"], summary');
 }
 
-document.addEventListener(
+// 這次的空白鍵是不是我們接手的：是的話，放開按鍵（keyup / keypress）也一起擋下，
+// 不讓「放開時才切換」的程式再切一次
+let spaceHandled = false;
+
+// 掛在 window 的 capture 階段：這是事件傳遞的第一站，比掛在 document 上的監聽器都早
+window.addEventListener(
   "keydown",
   (e) => {
     // 組合鍵交給瀏覽器/YouTube（Ctrl+A 全選、Cmd+D 加書籤…）
@@ -852,7 +957,9 @@ document.addEventListener(
       // 監聽器還是會跑。YouTube 如果也在 document 上掛了空白鍵處理，就會變成
       // 一次按鍵切換兩次＝等於沒按——跟之前多媒體鍵遇到的是同一類問題。
       e.stopImmediatePropagation();
-      toggleVideoPlayback();
+      spaceHandled = true;
+      // 按住不放時鍵盤會一直重送 keydown：只認第一下，不然影片會一閃一閃地播放、暫停
+      if (!e.repeat) toggleVideoPlayback();
       return;
     }
 
@@ -878,6 +985,19 @@ document.addEventListener(
   },
   true // capture 階段：比 YouTube 自己的 keydown 監聽更早拿到事件
 );
+
+function swallowHandledSpace(e) {
+  if (!spaceHandled || !(e.key === " " || e.code === "Space")) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (e.type === "keyup") {
+    spaceHandled = false;
+    // 按得比較久的話，從放開那一刻再守一小段時間（有些程式是放開按鍵時才切換）
+    if (playbackIntent) playbackIntent.until = Math.max(playbackIntent.until, Date.now() + 300);
+  }
+}
+window.addEventListener("keypress", swallowHandledSpace, true);
+window.addEventListener("keyup", swallowHandledSpace, true);
 
 // ---------- 控制列上的句子狀態小標籤 ----------
 //
@@ -1236,6 +1356,14 @@ function nudgeYouTubeLayout() {
 
 function onImmersionButtonClick() {
   immersionActive = !immersionActive;
+  if (immersionActive && zhOnlyMode) {
+    // 開始學英文、計時數：純中文字幕關掉，換回英文學習字幕
+    zhOnlyMode = false;
+    try {
+      chrome.storage.local.set({ [ZH_ONLY_KEY]: false });
+    } catch (e) {}
+    document.documentElement.classList.remove("flowstudy-zh-only");
+  }
   sessionSeconds = 0;
   lastCheckpointMinute = 0;
 
@@ -1323,12 +1451,21 @@ function isLearningEnabled() {
 
 const CAPTION_SCALE_KEY = "flowstudyCaptionScale";
 const HOVER_PAUSE_KEY = "flowstudyHoverPause";
+// 字幕長度：false = 完整句子（長句可能到兩三行），true = 一行短句（逗號或一行放不下就斷開）
+const CAPTION_SHORT_KEY = "flowstudyCaptionShortLines";
+// 隱藏推薦影片、影片置中：任何影片都能用（看中文娛樂影片也可以），不計入沉浸時數
+const WIDE_LAYOUT_KEY = "flowstudyWideLayout";
+// 純中文字幕：只顯示中文翻譯、不顯示英文，不計入沉浸時數（看國外教學影片吸收資訊用）
+const ZH_ONLY_KEY = "flowstudyZhOnly";
 const CAPTION_SCALE_MIN = 50;
 const CAPTION_SCALE_MAX = 200;
 const CAPTION_SCALE_STEP = 10;
 
 let captionScale = 100; // 百分比
 let hoverPauseEnabled = true;
+let captionShortLines = false;
+let wideLayoutEnabled = false;
+let zhOnlyMode = false;
 let settingsPanelEl = null;
 
 function applyCaptionScale() {
@@ -1346,6 +1483,59 @@ function setCaptionScale(next) {
   try {
     chrome.storage.local.set({ [CAPTION_SCALE_KEY]: captionScale });
   } catch (e) {}
+}
+
+// ---------- 隱藏推薦影片（不計時） ----------
+// 跟沉浸模式隱藏推薦欄用同一組 CSS（content.css 裡的 html.flowstudy-wide），
+// 只是不開計時、不換字幕。兩個同時開也沒關係，推薦欄一樣是藏起來的。
+function applyWideLayout() {
+  document.documentElement.classList.toggle("flowstudy-wide", wideLayoutEnabled);
+  nudgeYouTubeLayout(); // 推薦欄出現／消失，播放器寬度跟著變
+}
+
+function setWideLayout(enabled) {
+  wideLayoutEnabled = !!enabled;
+  try {
+    chrome.storage.local.set({ [WIDE_LAYOUT_KEY]: wideLayoutEnabled });
+  } catch (e) {}
+  applyWideLayout();
+  syncSettingsPanel();
+}
+
+// ---------- 純中文字幕（不計時） ----------
+// 跟沉浸模式互斥：沉浸模式是「學英文、計時數」，純中文是「看懂內容、不計時數」。
+// 兩個同時開，時數就會把只看中文的時間也算進去。所以打開一個就關掉另一個。
+function setZhOnly(enabled) {
+  const next = !!enabled && isEnglishCaption() !== false;
+  if (next && immersionActive) onImmersionButtonClick(); // 先把沉浸模式（和這一段計時）收掉
+  zhOnlyMode = next;
+  try {
+    chrome.storage.local.set({ [ZH_ONLY_KEY]: zhOnlyMode });
+  } catch (e) {}
+  applyZhOnly();
+  syncSettingsPanel();
+}
+
+function applyZhOnly() {
+  document.documentElement.classList.toggle("flowstudy-zh-only", zhOnlyMode);
+  if (zhOnlyMode) {
+    zhPausedUntil = 0;
+    ensureDualSubsWindow(); // 中文要有翻譯才看得到，馬上開始翻目前位置
+  } else if (!dualSubsEnabled) {
+    zhJobToken++; // 雙字幕也沒開：不需要翻譯了，停止送新的批次
+    zhProgress.running = false;
+  }
+  applyCaptionOverlayMode(true);
+  renderCaptionBar();
+}
+
+function setCaptionShortLines(enabled) {
+  captionShortLines = !!enabled;
+  try {
+    chrome.storage.local.set({ [CAPTION_SHORT_KEY]: captionShortLines });
+  } catch (e) {}
+  renderCaptionBar(); // 不用等下一句，現在這句馬上換成新的顯示方式
+  syncCaptionLengthPanel();
 }
 
 function setHoverPause(enabled) {
@@ -1406,11 +1596,43 @@ function buildSettingsPanel() {
 
       <div class="fs-panel-row">
         <span>
+          <div class="fs-panel-label">字幕長度</div>
+          <div class="fs-panel-sub" id="fsCaptionLengthSub"></div>
+        </span>
+        <span class="fs-segment" role="radiogroup" aria-label="字幕長度">
+          <button class="fs-seg-btn" id="fsCaptionFull" type="button" role="radio">完整句子</button>
+          <button class="fs-seg-btn" id="fsCaptionShort" type="button" role="radio">一行短句</button>
+        </span>
+      </div>
+
+      <div class="fs-panel-row">
+        <span>
           <div class="fs-panel-label">中英雙字幕</div>
           <div class="fs-panel-sub" id="fsDualSubsSub">英文下方同時顯示中文翻譯</div>
         </span>
         <button class="fs-switch" id="fsDualSubs" type="button" role="switch"
                 aria-checked="false" ${blocked ? "disabled" : ""}>
+          <span class="fs-switch-knob"></span>
+        </button>
+      </div>
+
+      <div class="fs-panel-row">
+        <span>
+          <div class="fs-panel-label">純中文字幕</div>
+          <div class="fs-panel-sub" id="fsZhOnlySub">只顯示中文翻譯，不計入沉浸時數</div>
+        </span>
+        <button class="fs-switch" id="fsZhOnly" type="button" role="switch"
+                aria-checked="false" ${blocked ? "disabled" : ""}>
+          <span class="fs-switch-knob"></span>
+        </button>
+      </div>
+
+      <div class="fs-panel-row">
+        <span>
+          <div class="fs-panel-label">隱藏推薦影片</div>
+          <div class="fs-panel-sub">影片置中，任何影片都能用，不計入沉浸時數</div>
+        </span>
+        <button class="fs-switch" id="fsWideLayout" type="button" role="switch" aria-checked="false">
           <span class="fs-switch-knob"></span>
         </button>
       </div>
@@ -1447,6 +1669,16 @@ function buildSettingsPanel() {
     hoverBtn.classList.toggle("is-on", hoverPauseEnabled);
   });
 
+  backdrop.querySelector("#fsCaptionFull").addEventListener("click", () => setCaptionShortLines(false));
+  backdrop.querySelector("#fsCaptionShort").addEventListener("click", () => setCaptionShortLines(true));
+
+  const zhOnlyBtn = backdrop.querySelector("#fsZhOnly");
+  zhOnlyBtn.addEventListener("click", () => {
+    if (zhOnlyBtn.disabled) return;
+    setZhOnly(!zhOnlyMode);
+  });
+  backdrop.querySelector("#fsWideLayout").addEventListener("click", () => setWideLayout(!wideLayoutEnabled));
+
   const dualBtn = backdrop.querySelector("#fsDualSubs");
   dualBtn.addEventListener("click", () => {
     if (dualBtn.disabled) return;
@@ -1479,7 +1711,41 @@ function syncSettingsPanel() {
   if (down) down.disabled = captionScale <= CAPTION_SCALE_MIN;
   if (up) up.disabled = captionScale >= CAPTION_SCALE_MAX;
 
+  syncCaptionLengthPanel();
   syncDualSubsPanel();
+
+  const setSwitch = (sel, on) => {
+    const b = settingsPanelEl.querySelector(sel);
+    if (!b) return;
+    b.setAttribute("aria-checked", String(on));
+    b.classList.toggle("is-on", on);
+  };
+  setSwitch("#fsZhOnly", zhOnlyMode);
+  setSwitch("#fsWideLayout", wideLayoutEnabled);
+  const zhOnlySub = settingsPanelEl.querySelector("#fsZhOnlySub");
+  if (zhOnlySub) {
+    zhOnlySub.textContent = zhOnlyMode
+      ? describeDualSubs()
+      : immersionActive
+        ? "只顯示中文翻譯；打開會先關閉沉浸模式"
+        : "只顯示中文翻譯，不計入沉浸時數";
+  }
+}
+
+function syncCaptionLengthPanel() {
+  if (!settingsPanelEl) return;
+  const full = settingsPanelEl.querySelector("#fsCaptionFull");
+  const short = settingsPanelEl.querySelector("#fsCaptionShort");
+  const sub = settingsPanelEl.querySelector("#fsCaptionLengthSub");
+  if (full) {
+    full.classList.toggle("is-active", !captionShortLines);
+    full.setAttribute("aria-checked", String(!captionShortLines));
+  }
+  if (short) {
+    short.classList.toggle("is-active", captionShortLines);
+    short.setAttribute("aria-checked", String(captionShortLines));
+  }
+  if (sub) sub.textContent = captionShortLines ? "一次一行，逗號或一行放不下就斷開" : "整句一起顯示，長句可能到兩三行";
 }
 
 function syncDualSubsPanel() {
@@ -1534,10 +1800,23 @@ function onSettingsEscape(e) {
 }
 
 function initPlayerSettings() {
-  chrome.storage.local.get([CAPTION_SCALE_KEY, HOVER_PAUSE_KEY, DUAL_SUBS_KEY], (data) => {
+  chrome.storage.local.get([CAPTION_SCALE_KEY, HOVER_PAUSE_KEY, DUAL_SUBS_KEY, CAPTION_SHORT_KEY, WIDE_LAYOUT_KEY, ZH_ONLY_KEY], (data) => {
     const scale = data && data[CAPTION_SCALE_KEY];
     if (Number.isFinite(scale)) captionScale = scale;
     if (data && data[HOVER_PAUSE_KEY] === false) hoverPauseEnabled = false;
+    if (data && data[CAPTION_SHORT_KEY] === true) {
+      captionShortLines = true;
+      renderCaptionBar();
+    }
+    if (data && data[WIDE_LAYOUT_KEY] === true) {
+      wideLayoutEnabled = true;
+      applyWideLayout();
+    }
+    // 沉浸模式（另一處非同步讀回）已經開著的話，以沉浸模式為準，兩者不能同時開
+    if (data && data[ZH_ONLY_KEY] === true && !immersionActive) {
+      zhOnlyMode = true;
+      applyZhOnly();
+    }
     if (data && data[DUAL_SUBS_KEY] === true) {
       dualSubsEnabled = true;
       ensureDualSubsWindow(); // 字幕時間軸可能比這裡早載入好，補翻一次目前位置
@@ -1587,8 +1866,9 @@ function setDualSubs(enabled) {
     zhPausedUntil = 0;
     zhProgress.notice = "";
     ensureDualSubsWindow();
-  } else {
-    zhJobToken++; // 關掉就停止送新的批次；已經翻好的留著，再打開不用重翻
+  } else if (!zhOnlyMode) {
+    // 關掉就停止送新的批次；已經翻好的留著，再打開不用重翻。純中文字幕開著的話還需要翻譯，不能停
+    zhJobToken++;
     zhProgress.running = false;
   }
   renderCaptionBar();
@@ -1605,7 +1885,7 @@ function resetDualSubs() {
 
 function describeDualSubs() {
   if (isEnglishCaption() === false) return "目前字幕不是英文，無法使用";
-  if (!dualSubsEnabled) return "英文下方同時顯示中文翻譯";
+  if (!zhWanted()) return "英文下方同時顯示中文翻譯";
   if (!sentenceTimeline.length) return "等字幕載入後開始翻譯";
   if (zhProgress.running) return "翻譯中…";
   if (zhProgress.notice) return zhProgress.notice;
@@ -1649,7 +1929,7 @@ function dualSubsIndicesToTranslate(list, t) {
 // 沒有需要時什麼都不做，所以頻繁呼叫也沒關係。
 async function ensureDualSubsWindow() {
   const list = sentenceTimeline;
-  if (!dualSubsEnabled || !list.length || isEnglishCaption() === false) return;
+  if (!zhWanted() || !list.length || isEnglishCaption() === false) return;
   if (zhBusyToken === zhJobToken) return; // 這一段還在翻，翻完會自己再檢查一次
   if (Date.now() < zhPausedUntil) return;
   const video = getVideoEl();
@@ -1703,8 +1983,13 @@ async function ensureDualSubsWindow() {
 }
 
 // 現在這一句的中文。即時記錄模式、或這句還沒翻好時是空字串。
+// 需不需要中文翻譯：中英雙字幕，或純中文字幕
+function zhWanted() {
+  return dualSubsEnabled || zhOnlyMode;
+}
+
 function getCaptionZhForNow() {
-  if (!dualSubsEnabled || !sentenceTimeline.length || isEnglishCaption() === false) return "";
+  if (!zhWanted() || !sentenceTimeline.length || isEnglishCaption() === false) return "";
   if (currentSentenceIndex < 0) return "";
   return zhByIndex[currentSentenceIndex] || "";
 }
@@ -1806,6 +2091,10 @@ function initImmersionTimer() {
   chrome.storage.session.get(["immersion_active", "immersion_session_seconds"], (data) => {
     if (data.immersion_active) {
       immersionActive = true;
+      if (zhOnlyMode) {
+        zhOnlyMode = false; // 兩者不能同時開，以沉浸模式為準
+        document.documentElement.classList.remove("flowstudy-zh-only");
+      }
       sessionSeconds = data.immersion_session_seconds || 0;
       lastCheckpointMinute = Math.floor(sessionSeconds / 60);
       document.documentElement.classList.add("zerostudy-immersion-active");
@@ -1830,11 +2119,11 @@ function initImmersionTimer() {
     // 版面處理就好，我們只在「一般（非全螢幕）模式」隱藏推薦影片。
     document.documentElement.classList.toggle("zerostudy-fullscreen", !!document.fullscreenElement);
     // 退出全螢幕時推薦欄又被藏起來，YouTube 卻是照「有推薦欄」算的寬度
-    if (immersionActive) nudgeYouTubeLayout();
+    if (immersionActive || wideLayoutEnabled) nudgeYouTubeLayout();
   });
   // SPA 換頁（例如從首頁點進影片）時，確保播放器照「沒有推薦欄」的寬度排版
   document.addEventListener("yt-navigate-finish", () => {
-    if (immersionActive) nudgeYouTubeLayout();
+    if (immersionActive || wideLayoutEnabled) nudgeYouTubeLayout();
   });
 
   setInterval(immersionHeartbeatTick, 1000);
@@ -2101,8 +2390,7 @@ function ensureCaptionBar() {
     if (!e.target.classList.contains("my-word")) return;
     const sel = window.getSelection();
     if (sel && sel.toString().trim().length > 0) return; // 其實是在選取片語
-    const sentence = captionBarTextEl ? captionBarTextEl.textContent.trim() : "";
-    doLookup(e.target.textContent, e.target.getBoundingClientRect(), sentence);
+    doLookup(e.target.textContent, e.target.getBoundingClientRect(), getCaptionSentenceContext(e.target));
   });
 
   attachCaptionBarDrag(bar);
@@ -2209,15 +2497,80 @@ function attachCaptionBarDrag(bar) {
 function getCaptionTextForNow() {
   const list = activeSentences();
   if (list.length && currentSentenceIndex >= 0 && list[currentSentenceIndex]) {
-    return list[currentSentenceIndex].text;
+    const sentence = list[currentSentenceIndex];
+    if (!captionShortLines) return sentence.text;
+    const video = getVideoEl();
+    const lines = getShortLines(list, currentSentenceIndex);
+    const t = video ? video.currentTime + NAV_PROBE_SECONDS : sentence.start;
+    let k = 0;
+    while (k + 1 < lines.length && lines[k + 1].start <= t) k++;
+    return lines[k].text;
   }
   if (!list.length) return getCurrentCaptionSentence();
   return "";
 }
 
+// ---------- 短句模式：一句拆成幾行 ----------
+//
+// 一行能放多寬要看當下的播放器寬度與字幕大小，所以在畫面上實際量：
+// 字幕框最寬是播放器的 88%，扣掉左右內距與左邊的拖曳把手，剩下的才是文字能用的寬度。
+// 拆好的結果依「哪一句＋這個寬度」快取，播放中每秒好幾次的重畫只是查表。
+let shortLinesCache = { list: null, width: 0, font: "", byIndex: new Map() };
+let measureCanvas = null;
+
+function captionLineMetrics() {
+  const player = getPlayerContainer();
+  if (!player || !captionBarTextEl) return null;
+  const bar = captionBarEl;
+  const barStyle = getComputedStyle(bar);
+  const grip = bar.querySelector(".flowstudy-caption-grip");
+  const used =
+    parseFloat(barStyle.paddingLeft) + parseFloat(barStyle.paddingRight) +
+    (grip ? grip.getBoundingClientRect().width + parseFloat(barStyle.columnGap || barStyle.gap || 0) : 0);
+  // 留 6% 餘裕：.my-word 的虛線底線、字距的小誤差，都不該讓一行剛好被擠成兩行
+  const width = Math.floor((player.clientWidth * 0.88 - used) * 0.94);
+  const t = getComputedStyle(captionBarTextEl);
+  const font = `${t.fontWeight} ${t.fontSize} ${t.fontFamily}`;
+  return width > 80 ? { width, font } : null;
+}
+
+function getShortLines(list, index) {
+  const sentence = list[index];
+  const m = captionLineMetrics();
+  if (!m) return [{ text: sentence.text, start: sentence.start, end: sentence.end }];
+  if (shortLinesCache.list !== list || shortLinesCache.width !== m.width || shortLinesCache.font !== m.font) {
+    shortLinesCache = { list, width: m.width, font: m.font, byIndex: new Map() };
+  }
+  // 即時記錄模式的最後一句還在長，不能快取
+  const cacheable = list === sentenceTimeline;
+  if (cacheable && shortLinesCache.byIndex.has(index)) return shortLinesCache.byIndex.get(index);
+
+  if (!measureCanvas) measureCanvas = document.createElement("canvas");
+  const ctx = measureCanvas.getContext("2d");
+  ctx.font = m.font;
+  const lines = Sentences.splitSentenceForDisplay(sentence, {
+    maxWidth: m.width,
+    measure: (text) => ctx.measureText(text).width,
+  });
+  if (cacheable) shortLinesCache.byIndex.set(index, lines);
+  return lines;
+}
+
+// 查單字時一起存下的例句：短句模式畫面上只有半句，還是要存完整的那一句
+function getCaptionSentenceContext(target) {
+  const el = target.closest(CAPTION_TEXT_SELECTOR);
+  if (!el) return "";
+  if (el.closest("#flowstudy-caption-bar")) {
+    const list = activeSentences();
+    const sentence = currentSentenceIndex >= 0 && list[currentSentenceIndex];
+    if (sentence && sentence.text.includes(el.textContent.trim())) return sentence.text;
+  }
+  return el.textContent.trim();
+}
+
 // 自繪字幕條現在應該顯示嗎？沉浸模式是總開關，使用者偏好是次要開關。
 function shouldShowCaptionOverlay() {
-  return immersionActive && captionOverlayEnabled;
+  return (immersionActive || zhOnlyMode) && captionOverlayEnabled;
 }
 
 function renderCaptionBar() {
@@ -2236,9 +2589,11 @@ function renderCaptionBar() {
     renderCaptionZh("");
     return;
   }
-  bar.classList.remove("is-empty");
   // 中文跟選取狀態無關（不能點、不會被選來查字），每次都照播放進度更新
-  renderCaptionZh(getCaptionZhForNow());
+  const zh = getCaptionZhForNow();
+  renderCaptionZh(zh);
+  // 純中文字幕只顯示中文：這句還沒翻好時整條收起來，不要出現一個空框
+  bar.classList.toggle("is-empty", zhOnlyMode && !zh);
 
   if (text !== lastRenderedCaptionText) {
     // 只有在「正在按著滑鼠拖曳選字」的當下才暫緩重畫，避免把選到一半的範圍弄掉。

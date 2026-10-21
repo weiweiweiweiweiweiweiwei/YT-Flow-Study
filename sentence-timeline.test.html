@@ -319,6 +319,54 @@
     lines.push(`      建立 ${(t1 - t0).toFixed(1)}ms，查詢 20000 次 ${(t2 - t1).toFixed(1)}ms，共 ${out.length} 句`);
   }
 
+  section("13b. 短句模式：把一句拆成一行一行（splitSentenceForDisplay）");
+  {
+    const split = S.splitSentenceForDisplay;
+    // 寬度用字元數量：一行最多 45 個字元
+    const opts = { maxWidth: 45, measure: (t) => t.length };
+    const long = "Charging is extremely fast on this guy, and the Gemini features are getting more and more useful and less and less in your face.";
+    const words = long.split(" ").map((text, i) => ({ text, start: 10 + i * 0.3 }));
+    const sentence = { text: long, start: 10, end: 10 + words.length * 0.3, words };
+    const out = split(sentence, opts);
+    check("★ 使用者截圖那句（三行）在逗號先斷開", out[0].text === "Charging is extremely fast on this guy,", out[0] && out[0].text);
+    check("★ 每一段都放得進一行", out.every(l => l.text.length <= 45), out.map(l => l.text.length).join(","));
+    check("逗號後面那一長段平均拆成兩行（不會最後只剩一兩個字）",
+      out.length === 3 && Math.abs(out[1].text.length - out[2].text.length) <= 12, out.map(l => l.text).join(" | "));
+    check("拆完接回去跟原句一字不差", out.map(l => l.text).join(" ") === long);
+    check("第一行從句子開頭出現", out[0].start === 10);
+    let wordIdx = 0;
+    const firstWordStarts = out.map(l => { const st = words[wordIdx].start; wordIdx += l.text.split(" ").length; return st; });
+    check("★ 每一行在它第一個字說出來時出現（用詞級時間）",
+      out.every((l, i) => Math.abs(l.start - firstWordStarts[i]) < 1e-9), out.map(l => l.start.toFixed(1)).join(","));
+    check("前一行一直顯示到下一行出現，最後一行到句尾",
+      out.every((l, i) => i + 1 < out.length ? l.end === out[i + 1].start : l.end === sentence.end));
+    check("時間一路往後", out.every((l, i) => i === 0 || l.start > out[i - 1].start));
+
+    const shortOne = split({ text: "This is short.", start: 1, end: 2 }, opts);
+    check("一行放得下又沒有逗號：維持整句", shortOne.length === 1 && shortOne[0].text === "This is short." &&
+      shortOne[0].start === 1 && shortOne[0].end === 2);
+
+    const well = split({ text: "Well, I think this is a great idea for everyone.", start: 0, end: 3 }, opts);
+    check("只有一個字的開頭（Well,）併進下一段，不會一閃而過",
+      well.every(l => l.text !== "Well,") && well[0].text.startsWith("Well, I"), well.map(l => l.text).join(" | "));
+    check("併完放不下一行就平均拆開", well.every(l => l.text.length <= 45), well.map(l => l.text).join(" | "));
+
+    const clauses = split({ text: "If you want speed, buy this one; if you want battery, wait.", start: 0, end: 4 }, opts);
+    check("逗號、分號都會斷開", clauses.length >= 3 && clauses[0].text === "If you want speed,", clauses.map(l => l.text).join(" | "));
+    check("結尾太短（wait.）併回上一段", clauses[clauses.length - 1].text === "if you want battery, wait." || clauses[clauses.length - 1].text.endsWith("battery, wait."),
+      clauses.map(l => l.text).join(" | "));
+
+    const noTiming = split({ text: long, start: 0, end: 10 }, opts);
+    check("沒有詞級時間（即時記錄模式）：依字數推估，時間落在句子裡且一路往後",
+      noTiming.every((l, i) => l.start >= 0 && l.end <= 10 && (i === 0 || l.start > noTiming[i - 1].start)));
+    check("寬度無限大（量不到畫面）時只照逗號斷", split(sentence, { measure: t => t.length }).length === 2);
+
+    const built = S.buildSentenceTimeline(cues([["Hello there, my friend. How are you?", 0, 4]]));
+    check("時間軸的句子帶著每個詞的開始時間，數量跟句子的字數一致",
+      built.every(s => Array.isArray(s.words) && s.words.length === s.text.split(" ").length),
+      built.map(s => (s.words || []).length + "/" + s.text.split(" ").length).join(","));
+  }
+
   function finish() {
     lines.push("\n" + "=".repeat(52));
     lines.push(`通過 ${pass} 項，失敗 ${fail} 項`);

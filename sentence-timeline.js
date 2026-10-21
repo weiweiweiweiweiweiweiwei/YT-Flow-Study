@@ -477,6 +477,8 @@
         end: Math.max(last.end, first.start + TUNING.MIN_SENTENCE_DURATION),
         cueStartIndex: first.cueIndex,
         cueEndIndex: last.cueIndex,
+        // 每個詞的開始時間。「短句模式」把長句拆成一行一行時，靠它決定每一行什麼時候出現
+        words: current.words.map((w) => ({ text: w.text, start: w.start })),
       });
       current = null;
     };
@@ -542,12 +544,116 @@
     return found;
   }
 
+  // ---------- 第五步（顯示用）：短句模式，把一句拆成一行一行 ----------
+  //
+  // splitSentenceForDisplay(sentence, { maxWidth, measure }) -> [{ text, start, end }]
+  //
+  // 完整的句子有時要三行才放得下，字幕框一大塊蓋住畫面。短句模式改成一次只出現一行：
+  //   1. 逗號、分號、冒號、破折號後面先斷開（說話的人通常也在這裡換氣）
+  //   2. 只有一兩個字的小段（"Well," "So,"）併進下一段，不要一閃而過
+  //   3. 還是放不下一行的，平均拆成幾行（不會最後一行只剩一個字）
+  // 每一行的時間取自句子裡的詞級時間（sentence.words）；沒有的話依字數比例推估。
+  // measure(text) 回傳寬度，maxWidth 是一行能放的寬度——由畫面實際量，這裡不管單位。
+  // 這只影響「畫面怎麼顯示」：句子時間軸、a/s/d、雙字幕翻譯都還是以完整句子為單位。
+  const CLAUSE_END_RE = /[,;:–—]["'’”)\]]*$/;
+  const TINY_CLAUSE_WORDS = 2;
+
+  function sentenceWords(sentence) {
+    const texts = String(sentence.text || "").split(/\s+/).filter(Boolean);
+    const timed = Array.isArray(sentence.words) ? sentence.words : null;
+    if (timed && timed.length === texts.length) {
+      return timed.map((w) => ({ text: w.text, start: w.start }));
+    }
+    // 沒有詞級時間（即時記錄模式的句子）：依字元位置在句子時間內平均分配
+    const total = texts.reduce((n, t) => n + t.length + 1, 0) || 1;
+    const dur = Math.max(0, sentence.end - sentence.start);
+    let offset = 0;
+    return texts.map((text) => {
+      const w = { text, start: sentence.start + (offset / total) * dur };
+      offset += text.length + 1;
+      return w;
+    });
+  }
+
+  function splitSentenceForDisplay(sentence, opts) {
+    const options = opts || {};
+    const measure = typeof options.measure === "function" ? options.measure : (t) => t.length;
+    const maxWidth = options.maxWidth > 0 ? options.maxWidth : Infinity;
+    const words = sentenceWords(sentence);
+    if (!words.length) return [{ text: sentence.text || "", start: sentence.start, end: sentence.end }];
+    const width = (ws) => measure(ws.map((w) => w.text).join(" "));
+
+    // 1. 在子句結尾斷開
+    let clauses = [];
+    let cur = [];
+    for (const w of words) {
+      cur.push(w);
+      if (CLAUSE_END_RE.test(w.text)) {
+        clauses.push(cur);
+        cur = [];
+      }
+    }
+    if (cur.length) clauses.push(cur);
+
+    // 2. 太短的子句併進下一段（最後一段太短就併回上一段）。
+    //    併了超出一行也沒關係，下一步會平均拆成兩行，總比 "Well," 單獨閃一下好讀
+    const merged = [];
+    for (let i = 0; i < clauses.length; i++) {
+      const c = clauses[i];
+      const next = clauses[i + 1];
+      if (next && c.length <= TINY_CLAUSE_WORDS) {
+        clauses[i + 1] = c.concat(next);
+        continue;
+      }
+      merged.push(c);
+    }
+    if (merged.length > 1) {
+      const last = merged[merged.length - 1];
+      const prev = merged[merged.length - 2];
+      if (last.length <= TINY_CLAUSE_WORDS) {
+        merged.splice(merged.length - 2, 2, prev.concat(last));
+      }
+    }
+    clauses = merged;
+
+    // 3. 放不下一行的子句平均拆成幾行
+    const lines = [];
+    for (const c of clauses) {
+      const total = width(c);
+      if (total <= maxWidth || c.length === 1) {
+        lines.push(c);
+        continue;
+      }
+      const n = Math.ceil(total / maxWidth);
+      const target = total / n;
+      let line = [];
+      let made = 0; // 這個子句已經拆出幾行（不能用 lines.length，那會算進前面子句的行）
+      for (const w of c) {
+        const linesLeft = n - made;
+        if (line.length && (width(line.concat(w)) > maxWidth || (width(line.concat(w)) > target && linesLeft > 1))) {
+          lines.push(line);
+          made++;
+          line = [];
+        }
+        line.push(w);
+      }
+      if (line.length) lines.push(line);
+    }
+
+    return lines.map((ws, i) => ({
+      text: ws.map((w) => w.text).join(" "),
+      start: i === 0 ? sentence.start : Math.max(sentence.start, ws[0].start),
+      end: i + 1 < lines.length ? Math.max(sentence.start, lines[i + 1][0].start) : sentence.end,
+    }));
+  }
+
   return {
     TUNING,
     normalizeCues,
     buildTokens,
     buildSentenceTimeline,
     getCurrentSentenceIndex,
+    splitSentenceForDisplay,
     // 匯出內部小工具，方便單元測試逐條驗證斷句規則
     _internals: { decodeEntities, cleanSegmentText, detectPunctuated, isAbbreviation, endsWithContinuationWord },
   };
