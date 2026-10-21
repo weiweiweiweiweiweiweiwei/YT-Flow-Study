@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "FlowStudy",
   "version": "1.1",
-  "description": "在 YouTube 字幕上點字或選取片語，即時顯示翻譯並自動儲存",
+  "description": "在 YouTube 字幕上點字或選取片語，即時顯示翻譯並自動儲存；任何網頁反白英文按 Z 也能查",
   "permissions": ["storage", "activeTab", "tabs", "alarms", "downloads", "downloads.ui", "offscreen", "identity"],
   "host_permissions": [
     "https://www.youtube.com/*",
@@ -27,6 +27,11 @@
       "matches": ["https://www.youtube.com/*"],
       "js": ["core/normalize.js", "sentence-timeline.js", "content.js"],
       "css": ["content.css"]
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["web-lookup.js"],
+      "all_frames": true
     }
   ],
   "icons": {

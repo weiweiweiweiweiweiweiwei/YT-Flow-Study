@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>FlowStudy 網頁查字測試</title>
+<style>
+  body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; margin: 24px; background: #fff; color: #111; }
+  /* 故意放幾條會「污染」框框的網站 CSS：框框在 Shadow DOM 裡，不該被影響 */
+  div { border: 3px solid red !important; font-family: "Comic Sans MS" !important; }
+  #out { position: fixed; right: 12px; top: 12px; width: 440px; max-height: 92vh; overflow: auto; z-index: 1;
+         background: #0f172a; color: #e2e8f0; font: 12px/1.6 ui-monospace, monospace; padding: 12px 14px;
+         border-radius: 10px; white-space: pre-wrap; border: none !important; }
+  p { max-width: 600px; font-size: 18px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<p id="article" style="margin-top: 220px">The <span id="w1">serendipity</span> of learning comes from <span id="w2">curiosity</span>, not from memorizing lists. 這是一段中文 <span id="zhOnly">沒有英文</span>。</p>
+<p><input id="field" value="type here zzz" /> <span contenteditable="true" id="editor">editable text</span></p>
+<div id="flowstudy-caption-bar"><span id="capWord">caption</span></div>
+<div style="height: 1600px"></div>
+<pre id="out">執行中…</pre>
+
+<script>
+// ===== 假的 chrome 擴充功能 API：記下送到背景的訊息，回傳假翻譯與假發音 =====
+const local = { flowstudyCaptionScale: 150 };
+const sent = [];
+window.__translateDelay = 30;
+window.chrome = {
+  storage: {
+    local: { get(keys, cb) { const o = {}; keys.forEach(k => { if (k in local) o[k] = local[k]; }); setTimeout(() => cb(o), 0); } },
+    onChanged: { addListener() {} },
+  },
+  runtime: {
+    lastError: null,
+    sendMessage(msg, cb) {
+      sent.push(msg);
+      const res = msg.type === "translate" ? { translated: "譯：" + msg.text } : msg.type === "speak" ? { audioDataUrl: null } : null;
+      setTimeout(() => cb && cb(res), msg.type === "translate" ? window.__translateDelay : 5);
+    },
+  },
+};
+</script>
+<script src="web-lookup.js"></script>
+<script>
+(async function () {
+  const lines = [];
+  let pass = 0, fail = 0;
+  const check = (n, c, d) => { if (c) { pass++; lines.push("  ✓ " + n); } else { fail++; lines.push("  ✗ " + n + (d !== undefined ? "\n      → " + d : "")); } };
+  const section = (t) => lines.push("\n" + t);
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  async function until(cond, ms = 2000) { const t0 = Date.now(); while (!cond() && Date.now() - t0 < ms) await wait(20); return cond(); }
+  const $ = (s) => document.querySelector(s);
+  const host = () => document.getElementById("flowstudy-web-lookup");
+  const box = () => host() && host().shadowRoot.querySelector(".box");
+  const shown = () => !!(box() && !box().hidden);
+  const boxText = () => (box() ? box().textContent : "");
+  function select(el) { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+  function pressZ(target = document.body, opts = {}) {
+    const e = new KeyboardEvent("keydown", { key: "z", code: "KeyZ", bubbles: true, cancelable: true, ...opts });
+    target.dispatchEvent(e);
+    return e;
+  }
+  const translateCalls = () => sent.filter(m => m.type === "translate");
+
+  try {
+    await wait(50);
+    section("1. 反白英文按 Z → 跳出翻譯框");
+    select($("#w1"));
+    const e1 = pressZ();
+    check("Z 被接手（不會再傳給網站）", e1.defaultPrevented);
+    check("馬上出現框框，先顯示「翻譯中…」", shown() && boxText().includes("serendipity") && boxText().includes("翻譯中"), boxText());
+    await until(() => boxText().includes("譯："));
+    check("★ 翻譯回來後顯示原文 + 中文", boxText() === "serendipity譯：serendipity", boxText());
+    check("同時請背景唸出發音", sent.some(m => m.type === "speak" && m.text === "serendipity"));
+    const wr = $("#w1").getBoundingClientRect(), br = box().getBoundingClientRect();
+    check("★ 框框在反白文字的正上方", br.bottom <= wr.top && Math.abs((br.left + br.width / 2) - (wr.left + wr.width / 2)) < 2,
+      `box ${br.top.toFixed(0)}–${br.bottom.toFixed(0)}, word top ${wr.top.toFixed(0)}`);
+    check("★ 網站自己的 CSS 弄不壞框框（沒有紅框、字型正常）", getComputedStyle(box()).borderTopWidth === "0px" &&
+      !getComputedStyle(box()).fontFamily.includes("Comic"), getComputedStyle(box()).borderTopWidth + " / " + getComputedStyle(box()).fontFamily);
+    check("跟著「字幕大小」縮放（150%）", Math.abs(parseFloat(getComputedStyle(box().querySelector(".original")).fontSize) - 25.5) < 0.6,
+      getComputedStyle(box().querySelector(".original")).fontSize);
+    check("白底", getComputedStyle(box()).backgroundColor === "rgb(255, 255, 255)");
+
+    section("2. 片語與換字");
+    const r = document.createRange();
+    r.setStart($("#w1").firstChild, 0); r.setEnd($("#w2").firstChild, 9);
+    getSelection().removeAllRanges(); getSelection().addRange(r);
+    pressZ();
+    await until(() => boxText().includes("譯：serendipity of"));
+    check("反白一整段片語也能查（空白、換行整理成一行）", translateCalls().at(-1).text === "serendipity of learning comes from curiosity", translateCalls().at(-1).text);
+    window.__translateDelay = 200;
+    select($("#w1")); pressZ();
+    await wait(20);
+    select($("#w2")); pressZ();
+    await wait(400);
+    check("★ 連查兩個字：慢回來的舊結果不會蓋掉新的", boxText() === "curiosity譯：curiosity", boxText());
+    window.__translateDelay = 30;
+
+    section("3. 這些情況 Z 照原本的用途，不查字");
+    getSelection().removeAllRanges();
+    let n = translateCalls().length;
+    let ev = pressZ();
+    check("沒有反白：不攔 Z（網站自己的 Z 快捷鍵照常運作）", !ev.defaultPrevented && translateCalls().length === n);
+    select($("#zhOnly")); ev = pressZ();
+    check("只反白中文：不查", !ev.defaultPrevented && translateCalls().length === n);
+    select($("#w1"));
+    ev = pressZ(document.body, { ctrlKey: true });
+    check("★ Ctrl+Z（復原）絕對不搶", !ev.defaultPrevented && translateCalls().length === n);
+    $("#field").focus(); $("#field").select();
+    ev = pressZ($("#field"));
+    check("★ 在輸入框裡打字：Z 就是 Z", !ev.defaultPrevented && translateCalls().length === n);
+    $("#field").blur();
+    $("#editor").focus(); select($("#editor"));
+    ev = pressZ($("#editor"));
+    check("在可編輯區（文件編輯器）裡也不搶", !ev.defaultPrevented && translateCalls().length === n);
+    $("#editor").blur();
+    select($("#capWord")); ev = pressZ();
+    check("YouTube 上 FlowStudy 自己的字幕條（那裡反白就會查）不重複跳框", !ev.defaultPrevented && translateCalls().length === n);
+    const long = document.createElement("p"); long.textContent = "word ".repeat(80); document.body.appendChild(long);
+    select(long); ev = pressZ();
+    check("反白一大段（超過 300 字）不查", !ev.defaultPrevented && translateCalls().length === n);
+    long.remove();
+
+    section("4. 關閉與跟著捲動");
+    select($("#w1")); pressZ();
+    await until(() => boxText().includes("譯："));
+    box().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, composed: true }));
+    check("點框框裡面不會關（可以反白框裡的字）", shown());
+    const before = box().getBoundingClientRect().top;
+    window.scrollBy(0, 60);
+    window.dispatchEvent(new Event("scroll")); // 測試面板在背景時瀏覽器不會自己送 scroll 事件
+    await wait(30);
+    const after = box().getBoundingClientRect().top;
+    check("★ 頁面捲動時框框跟著那段字移動", Math.abs((before - after) - 60) < 3, `${before.toFixed(0)} → ${after.toFixed(0)}`);
+    window.scrollTo(0, 0); await wait(40);
+    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    check("點框框外面就關閉", !shown());
+
+    select($("#w1"));
+    window.scrollTo(0, 0); await wait(20);
+    const wTop = $("#w1").getBoundingClientRect().top;
+    window.scrollTo(0, wTop - 20); await wait(20); // 讓那個字貼近畫面頂端
+    select($("#w1")); pressZ();
+    await until(() => boxText().includes("譯："));
+    const w1r = $("#w1").getBoundingClientRect(), b1r = box().getBoundingClientRect();
+    check("字太靠近畫面頂端時，框框改放在字的下方", b1r.top >= w1r.bottom, `${b1r.top.toFixed(0)} vs ${w1r.bottom.toFixed(0)}`);
+    window.scrollTo(0, 0); await wait(20);
+    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    select($("#w2")); pressZ();
+    await until(() => boxText().includes("譯："));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    check("按 Esc 關閉", !shown());
+    window.__translateDelay = 200;
+    select($("#w1")); pressZ();
+    await wait(20);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await wait(350);
+    check("翻譯還沒回來就關掉：回來之後也不會自己又跳出來", !shown());
+    window.__translateDelay = 30;
+  } catch (err) {
+    lines.push("\n例外：" + (err && err.stack || err));
+    fail++;
+  }
+
+  lines.push("\n" + "=".repeat(48));
+  lines.push(`通過 ${pass} 項，失敗 ${fail} 項`);
+  document.getElementById("out").textContent = lines.join("\n");
+  document.title = fail === 0 ? "ALL PASS" : ("FAIL " + fail);
+})();
+</script>
+</body>
+</html>
