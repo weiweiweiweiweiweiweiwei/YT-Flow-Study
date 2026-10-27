@@ -99,25 +99,25 @@ window.chrome = {
     section("3. 這些情況 Z 照原本的用途，不查字");
     getSelection().removeAllRanges();
     let n = translateCalls().length;
-    let ev = pressZ();
+    await wait(450); let ev = pressZ();
     check("沒有反白：不攔 Z（網站自己的 Z 快捷鍵照常運作）", !ev.defaultPrevented && translateCalls().length === n);
-    select($("#zhOnly")); ev = pressZ();
+    select($("#zhOnly")); await wait(450); ev = pressZ();
     check("只反白中文：不查", !ev.defaultPrevented && translateCalls().length === n);
     select($("#w1"));
-    ev = pressZ(document.body, { ctrlKey: true });
+    await wait(450); ev = pressZ(document.body, { ctrlKey: true });
     check("★ Ctrl+Z（復原）絕對不搶", !ev.defaultPrevented && translateCalls().length === n);
     $("#field").focus(); $("#field").select();
-    ev = pressZ($("#field"));
+    await wait(450); ev = pressZ($("#field"));
     check("★ 在輸入框裡打字：Z 就是 Z", !ev.defaultPrevented && translateCalls().length === n);
     $("#field").blur();
     $("#editor").focus(); select($("#editor"));
-    ev = pressZ($("#editor"));
+    await wait(450); ev = pressZ($("#editor"));
     check("在可編輯區（文件編輯器）裡也不搶", !ev.defaultPrevented && translateCalls().length === n);
     $("#editor").blur();
-    select($("#capWord")); ev = pressZ();
+    select($("#capWord")); await wait(450); ev = pressZ();
     check("YouTube 上 FlowStudy 自己的字幕條（那裡反白就會查）不重複跳框", !ev.defaultPrevented && translateCalls().length === n);
     const long = document.createElement("p"); long.textContent = "word ".repeat(80); document.body.appendChild(long);
-    select(long); ev = pressZ();
+    select(long); await wait(450); ev = pressZ();
     check("反白一大段（超過 300 字）不查", !ev.defaultPrevented && translateCalls().length === n);
     long.remove();
 
@@ -157,6 +157,70 @@ window.chrome = {
     await wait(350);
     check("翻譯還沒回來就關掉：回來之後也不會自己又跳出來", !shown());
     window.__translateDelay = 30;
+
+    section("5. ★ 連按兩下 Z：在滑鼠位置打開快速翻譯欄");
+    const quick = () => host().shadowRoot.querySelector(".quick");
+    const qInput = () => quick().querySelector("input");
+    const qOut = () => quick().querySelector(".out");
+    const quickShown = () => !!(quick() && !quick().hidden);
+    getSelection().removeAllRanges();
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 400, bubbles: true }));
+    const z1 = pressZ();
+    check("第一下 Z 還給網站（網站自己的 Z 快捷鍵不受影響）", !z1.defaultPrevented && !quickShown());
+    await wait(120);
+    const z2 = pressZ();
+    check("★ 很快再按一下：打開輸入欄", z2.defaultPrevented && quickShown());
+    await wait(220); // 等出場動畫（往上浮 4px）跑完再量位置
+    const qr = quick().getBoundingClientRect();
+    check("★ 出現在滑鼠的位置（往右下錯開 8px，不被游標蓋住）", quick().style.left === "308px" && quick().style.top === "408px", quick().style.left + "," + quick().style.top);
+    check("輸入欄很小（約 200px 寬）", qr.width <= 210 && qr.height <= 50, `${qr.width.toFixed(0)}×${qr.height.toFixed(0)}`);
+    check("游標直接在輸入欄裡，可以馬上打字", host().shadowRoot.activeElement === qInput());
+    check("那一下 z 沒有被打進輸入欄", qInput().value === "");
+    const qs = getComputedStyle(quick());
+    check("★ Liquid Glass：半透明 + 背景模糊", /blur\(20px\)/.test(qs.backdropFilter || qs.webkitBackdropFilter) && qs.backgroundImage.includes("rgba(255, 255, 255, 0.36)"),
+      qs.backdropFilter + " / " + qs.backgroundImage.slice(0, 60));
+    check("自己畫的，沒有縮小／放大／關閉按鈕", quick().querySelectorAll("button").length === 0);
+
+    let leaked = 0;
+    const leak = (e) => leaked++;
+    document.addEventListener("keydown", leak);
+    qInput().dispatchEvent(new KeyboardEvent("keydown", { key: "k", bubbles: true, composed: true }));
+    document.removeEventListener("keydown", leak);
+    check("★ 在輸入欄打字，按鍵不會傳到網頁（YouTube 的 k、空白鍵不會暫停影片）", leaked === 0, leaked);
+
+    n = translateCalls().length;
+    qInput().value = "a piece of cake";
+    qInput().dispatchEvent(new Event("input", { bubbles: true }));
+    await wait(50);
+    check("邊打字不會一直送翻譯（只在按 Enter 時翻，避免被 Google 擋）", translateCalls().length === n);
+    qInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    check("按 Enter 先顯示「翻譯中…」", !qOut().hidden && qOut().textContent === "翻譯中…");
+    await until(() => qOut().textContent.startsWith("譯："));
+    check("★ 翻譯出現在輸入欄下方", qOut().textContent === "譯：a piece of cake" && translateCalls().at(-1).text === "a piece of cake", qOut().textContent);
+    check("輸入框裡的字保留，可以改了再翻", qInput().value === "a piece of cake");
+
+    quick().dispatchEvent(new MouseEvent("mousedown", { bubbles: true, composed: true }));
+    check("點輸入欄自己不會關", quickShown());
+    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    check("★ 點畫面任意處，輸入欄消失", !quickShown());
+
+    pressZ(); await wait(80); pressZ();
+    check("再連按兩下 Z：重新打開、內容清空", quickShown() && qInput().value === "" && qOut().hidden);
+    qInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    check("按 Esc 也會關", !quickShown());
+
+    pressZ(); await wait(600); pressZ();
+    check("兩下隔太久（超過 0.4 秒）不算連按", !quickShown());
+    $("#field").focus();
+    pressZ($("#field")); await wait(60); pressZ($("#field"));
+    check("在輸入框裡打 zz 不會打開", !quickShown());
+    $("#field").blur();
+
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: innerWidth - 20, clientY: innerHeight - 10, bubbles: true }));
+    pressZ(); await wait(60); pressZ();
+    const qr2 = quick().getBoundingClientRect();
+    check("滑鼠在畫面右下角：輸入欄往內收，不超出畫面", qr2.right <= innerWidth && qr2.bottom <= innerHeight, `${qr2.right.toFixed(0)},${qr2.bottom.toFixed(0)}`);
+    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   } catch (err) {
     lines.push("\n例外：" + (err && err.stack || err));
     fail++;

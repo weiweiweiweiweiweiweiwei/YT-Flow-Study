@@ -913,6 +913,9 @@ function goToNextSentence() {
 // 使用者正在打字時（留言、搜尋、改標題…）絕對不能誤觸
 function isTypingTarget(el) {
   if (!el) return false;
+  // 焦點在 Shadow DOM 裡（例如網頁查字的快速翻譯欄）時，document.activeElement 只是外殼，要往裡找；
+  // 不然在那個輸入欄打 a、s、d、空白鍵，會被當成句子導覽和播放／暫停
+  if (el.shadowRoot && el.shadowRoot.activeElement) return isTypingTarget(el.shadowRoot.activeElement);
   const tag = el.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
   if (el.isContentEditable) return true;
@@ -943,7 +946,7 @@ window.addEventListener(
     // 組合鍵交給瀏覽器/YouTube（Ctrl+A 全選、Cmd+D 加書籤…）
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.isComposing || e.keyCode === 229) return; // 輸入法組字中
-    if (isTypingTarget(document.activeElement) || isTypingTarget(e.target)) return;
+    if (isTypingTarget(document.activeElement) || isTypingTarget(e.composedPath()[0])) return;
 
     const key = (e.key || "").toLowerCase();
 

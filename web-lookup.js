@@ -1,4 +1,5 @@
 // 網頁查字：在任何網頁反白英文，按 Z，就在反白處上方跳出翻譯小框框。
+// 快速翻譯：沒有反白時連按兩下 Z，在滑鼠的位置打開一個小小的輸入欄，打英文按 Enter 看中文。
 //
 // 框框的樣子跟 YouTube 字幕上點字跳出來的那個一樣（白底、粗體原文、下面一行中文），
 // 也一樣會自動唸出發音。翻譯與發音都交給背景（background.js 的 translate / speak），
@@ -21,6 +22,20 @@
   let lookupId = 0; // 每次查詢遞增；舊的翻譯晚回來時對不上號就丟掉
   let audio = null;
   let anchorRange = null; // 反白的那段字；頁面捲動時框框跟著它移動
+  let quick = null; // 快速翻譯的輸入欄（跟查字框放在同一個 Shadow DOM 裡）
+  let quickId = 0;
+  let lastZAt = 0; // 上一次按 Z 的時間：兩下夠近就算「連按兩下」
+  const DOUBLE_Z_MS = 400;
+  const mouse = { x: innerWidth / 2, y: innerHeight / 2 }; // 輸入欄要出現在滑鼠的地方
+
+  document.addEventListener(
+    "mousemove",
+    (e) => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+    },
+    { capture: true, passive: true }
+  );
 
   // ---------- 字幕大小設定（框框跟著縮放） ----------
   try {
@@ -42,6 +57,8 @@
   // 使用者正在打字（搜尋框、留言、文件編輯器）時，Z 就是 Z
   function isTyping(el) {
     if (!el) return false;
+    // 游標在 Shadow DOM 裡的輸入框（例如我們自己的快速翻譯欄）時，外面看到的只是外殼，要往裡找
+    if (el.shadowRoot && el.shadowRoot.activeElement) return isTyping(el.shadowRoot.activeElement);
     const tag = el.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
     if (el.isContentEditable) return true;
@@ -78,13 +95,27 @@
       if (e.key !== "z" && e.key !== "Z") return;
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return; // Ctrl+Z 是復原，絕對不能搶
       if (e.isComposing || e.keyCode === 229) return; // 輸入法組字中
-      if (isTyping(document.activeElement) || isTyping(e.target)) return;
+      if (isTyping(document.activeElement) || isTyping(e.composedPath()[0])) return;
       const picked = currentSelection();
-      if (!picked) return; // 沒有反白英文：Z 交還給網站（有些網站自己用 Z 當快捷鍵）
-      e.preventDefault();
-      e.stopPropagation();
-      anchorRange = picked.range;
-      lookup(picked.text, picked.rect);
+      if (picked) {
+        e.preventDefault();
+        e.stopPropagation();
+        lastZAt = 0;
+        anchorRange = picked.range;
+        lookup(picked.text, picked.rect);
+        return;
+      }
+      // 沒有反白：第一下 Z 照樣交還給網站（有些網站自己用 Z 當快捷鍵），
+      // 很快再按一下才算「連按兩下」，打開快速翻譯欄
+      const now = Date.now();
+      if (now - lastZAt <= DOUBLE_Z_MS) {
+        e.preventDefault(); // 不然這個 z 會被打進剛打開的輸入欄
+        e.stopPropagation();
+        lastZAt = 0;
+        openQuick();
+      } else {
+        lastZAt = now;
+      }
     },
     true
   );
@@ -110,6 +141,56 @@
     .original { font-size: calc(17px * var(--s)); font-weight: 700; margin-bottom: 2px; word-break: break-word; }
     .translated { font-size: calc(14px * var(--s)); color: #333; }
     .loading { font-size: calc(13px * var(--s)); color: #888; }
+
+    /* 快速翻譯欄：Liquid Glass。
+       半透明白 + 背景模糊與提高飽和度（透出後面畫面的顏色），
+       上緣一道內側高光、外圈一圈細亮邊，看起來像一片有厚度的玻璃。
+       不透明度刻意留在五成上下：太透在深色網頁上字會看不清楚。 */
+    .quick {
+      position: fixed;
+      z-index: 2147483647;
+      box-sizing: border-box;
+      width: 200px;
+      padding: 5px;
+      border-radius: 14px;
+      font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+      color: #111;
+      background: linear-gradient(160deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.36));
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.85),
+        inset 0 -1px 0 rgba(255, 255, 255, 0.25),
+        0 8px 28px rgba(0, 0, 0, 0.22),
+        0 1px 3px rgba(0, 0, 0, 0.12);
+      animation: rise 0.16s ease-out;
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(4px) scale(0.97); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .quick { animation: none; } }
+    .quick input {
+      all: unset;
+      box-sizing: border-box;
+      display: block;
+      width: 100%;
+      padding: 5px 9px;
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.3;
+      color: #111;
+      background: rgba(255, 255, 255, 0.35);
+      caret-color: #2563eb;
+    }
+    .quick input::placeholder { color: rgba(17, 17, 17, 0.45); }
+    .quick .out {
+      padding: 6px 9px 3px;
+      font-size: 14px;
+      line-height: 1.45;
+      color: #111;
+      word-break: break-word;
+      text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+    }
+    .quick .out.dim { color: rgba(17, 17, 17, 0.55); font-size: 12.5px; }
   `;
 
   function ensureBox() {
@@ -119,8 +200,12 @@
       host = document.createElement("div");
       host.id = HOST_ID;
       const root = host.attachShadow({ mode: "open" });
-      root.innerHTML = `<style>${STYLE}</style><div class="box" role="dialog" aria-live="polite"></div>`;
+      root.innerHTML = `<style>${STYLE}</style><div class="box" role="dialog" aria-live="polite" hidden></div>
+        <div class="quick" hidden><input type="text" placeholder="輸入英文，按 Enter" aria-label="輸入英文翻成中文"
+          autocomplete="off" spellcheck="false"><div class="out" aria-live="polite" hidden></div></div>`;
       box = root.querySelector(".box");
+      quick = root.querySelector(".quick");
+      wireQuick();
     }
     if (host.parentNode !== parent) parent.appendChild(host);
     box.style.setProperty("--s", scale);
@@ -209,18 +294,102 @@
     }
   }
 
-  // 點框框以外的地方、按 Esc → 關掉
+  // ---------- 快速翻譯欄 ----------
+  function quickOpen() {
+    return !!(quick && !quick.hidden && host && host.isConnected);
+  }
+
+  function openQuick() {
+    ensureBox();
+    close(); // 查字框跟輸入欄不同時出現
+    const input = quick.querySelector("input");
+    const out = quick.querySelector(".out");
+    input.value = "";
+    out.hidden = true;
+    out.textContent = "";
+    quick.hidden = false;
+    placeQuick();
+    input.focus({ preventScroll: true });
+  }
+
+  // 左上角對齊滑鼠（稍微往右下錯開，不要被游標本身蓋住），超出視窗就往內收
+  function placeQuick() {
+    const vw = document.documentElement.clientWidth || innerWidth;
+    const vh = document.documentElement.clientHeight || innerHeight;
+    const w = quick.offsetWidth;
+    const h = quick.offsetHeight;
+    let left = mouse.x + 8;
+    let top = mouse.y + 8;
+    if (left + w > vw - 8) left = Math.max(8, mouse.x - w - 8);
+    if (top + h > vh - 8) top = Math.max(8, mouse.y - h - 8);
+    quick.style.left = left + "px";
+    quick.style.top = top + "px";
+  }
+
+  function closeQuick() {
+    if (!quick) return;
+    quickId++;
+    quick.hidden = true;
+    const input = quick.querySelector("input");
+    if (host && host.shadowRoot.activeElement === input) input.blur();
+  }
+
+  function wireQuick() {
+    const input = quick.querySelector("input");
+    const out = quick.querySelector(".out");
+
+    // 在輸入欄裡打字時，按鍵不能再傳到網頁上：
+    // YouTube 會把 k、j、空白鍵當成播放控制，其他網站也各有自己的快捷鍵。
+    for (const type of ["keydown", "keyup", "keypress"]) {
+      input.addEventListener(type, (e) => e.stopPropagation());
+    }
+
+    input.addEventListener("keydown", async (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeQuick();
+        return;
+      }
+      if (e.key !== "Enter" || e.isComposing) return;
+      e.preventDefault();
+      const text = input.value.replace(/\s+/g, " ").trim();
+      if (!text) return;
+      // 只在按 Enter 時翻譯，不邊打邊翻：每打一個字就送一次，很快就會被 Google 暫時擋下
+      const id = ++quickId;
+      out.hidden = false;
+      out.className = "out dim";
+      out.textContent = "翻譯中…";
+      placeQuick();
+      const res = await send({ type: "translate", text: text.slice(0, 500) });
+      if (id !== quickId) return;
+      if (res && res.translated) {
+        out.className = "out";
+        out.textContent = res.translated;
+      } else {
+        out.className = "out dim";
+        out.textContent = !res ? "FlowStudy 剛更新過，請重新整理這個網頁" : res.error || "翻譯失敗，請檢查網路連線";
+      }
+      placeQuick();
+    });
+  }
+
+  // 點框框以外的任何地方、按 Esc → 關掉（查字框與輸入欄都一樣）
   document.addEventListener(
     "mousedown",
     (e) => {
-      if (isOpen() && !e.composedPath().includes(host)) close();
+      const inside = host && e.composedPath().includes(host);
+      if (inside) return;
+      if (isOpen()) close();
+      if (quickOpen()) closeQuick();
     },
     true
   );
   document.addEventListener(
     "keydown",
     (e) => {
-      if (e.key === "Escape" && isOpen()) close();
+      if (e.key !== "Escape") return;
+      if (isOpen()) close();
+      if (quickOpen()) closeQuick();
     },
     true
   );
