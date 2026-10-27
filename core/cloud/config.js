@@ -1,16 +1,23 @@
 // ============================================================================
-// Supabase 連線設定
+// Google 登入與雲端硬碟同步的設定
 // ============================================================================
 //
-// 這把 publishable key 本來就是設計給前端公開使用的（等同舊版的 anon key），
-// 放在擴充功能裡沒有問題：資料安全靠的是資料庫的 Row Level Security——
-// 每一列都綁著 user_id，登入的人只讀得到、寫得到自己的那幾列。
+// GOOGLE_CLIENT_ID 是 Google Cloud「OAuth 用戶端 ID」（類型：網頁應用程式）。
+// 它本來就是公開的值（任何網站的 Google 登入按鈕都看得到），放在擴充功能裡沒有問題；
+// 刻意不放「用戶端密碼」——擴充功能的原始碼誰都看得到，密碼放進來就不是密碼了。
 //
-// Google 登入完成後，Supabase 會把使用者導回 chrome.identity.getRedirectURL()，
-// 也就是 https://<擴充功能 ID>.chromiumapp.org/。這個網址必須加進 Supabase 的
-// Redirect URLs 允許清單。擴充功能 ID 是由資料夾路徑算出來的——
-// 資料夾改名或搬家，ID 就變了，登入會失敗，要把新的網址再加一次。
+// 這個用戶端的「已授權的重新導向 URI」必須加入 https://<擴充功能 ID>.chromiumapp.org/
+// （設定頁「帳號與雲端同步」卡片裡會顯示這台電腦的確切網址）。
+// 擴充功能 ID 是由資料夾路徑算出來的——資料夾改名或搬家，ID 就變了，要把新網址再加一次。
+//
+// 2026-10 起不再使用 Supabase：資料存在每個人自己的 Google 雲端硬碟（見 drive.js）。
 // ============================================================================
 
-export const SUPABASE_URL = "https://algdqnztwyrcxuxqnzyp.supabase.co";
-export const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_hZfo8Yz1j1-f5AitbN0c4g_bW0cBapR";
+export const GOOGLE_CLIENT_ID = "179560802326-eo4tm50cn1hjv62m7336ikiverudnkbt.apps.googleusercontent.com";
+
+export const GOOGLE_SCOPES = [
+  "https://www.googleapis.com/auth/drive.appdata",
+  "openid",
+  "email",
+  "profile",
+];

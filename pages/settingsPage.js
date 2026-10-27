@@ -89,17 +89,20 @@ function renderAccountBody(card, state) {
   if (!user) {
     body.innerHTML = `
       <p class="settings-hint">
-        用 Google 帳號登入後，單字、沉浸時數、複習紀錄會自動同步到雲端。
+        用 Google 帳號登入後，單字、沉浸時數、複習紀錄會自動同步到你自己的 Google 雲端硬碟。
         換電腦、或擴充功能被移除後重新安裝，只要登入就能全部拿回來。
+        資料放在雲端硬碟裡 FlowStudy 專用的隱藏資料夾，不會出現在你的檔案列表，FlowStudy 也看不到你的其他檔案。
       </p>
+      ${state && state.configured === false ? `
+      <p class="settings-hint data-error">還沒設定 Google 登入用的用戶端 ID，暫時無法登入。</p>` : `
       <div class="data-actions">
         <button class="google-btn" id="signInBtn" type="button">${ICONS.google}<span>使用 Google 登入</span></button>
-      </div>
+      </div>`}
       ${state && state.redirectUrl ? `
-      <details class="account-help">
+      <details class="account-help" ${state && state.configured === false ? "open" : ""}>
         <summary>登入視窗出現錯誤？</summary>
         <p class="settings-hint">
-          Supabase 後台 → Authentication → URL Configuration → Redirect URLs 需要加入下面這個網址
+          Google Cloud → API 和服務 → 憑證 → FlowStudy 的 OAuth 用戶端 →「已授權的重新導向 URI」需要加入下面這個網址
           （它跟著擴充功能 ID 走，資料夾改名或搬家就會變）：
         </p>
         <code class="data-path account-redirect">${escapeHtml(state.redirectUrl)}</code>
@@ -181,7 +184,7 @@ async function initAccountCard(root) {
         showMessage("同步失敗：" + (err.message || err), true);
       }
     } else if (btn.id === "signOutBtn") {
-      if (!confirm("確定要登出嗎？\n\n本機的學習資料都會留著，只是不再同步到雲端。")) return;
+      if (!confirm("確定要登出嗎？\n\n本機的學習資料都會留著，雲端硬碟上的那一份也不會刪，只是不再同步。")) return;
       btn.disabled = true;
       try {
         await askBackground("auth:signOut");

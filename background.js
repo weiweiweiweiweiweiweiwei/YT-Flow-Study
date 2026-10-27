@@ -28,7 +28,7 @@ import { upsertVideo } from "./core/storage/videoStore.js";
 import { runMigrationIfNeeded, removeZeroStudyHoursIfNeeded } from "./core/storage/migrate.js";
 import { lookupWord } from "./core/dictionary/lookup.js";
 import { initAutoBackup, runBackup, getBackupStatus } from "./auto-backup.js";
-import { signInWithGoogle, signOut, getCurrentUser, getRedirectUrl } from "./core/cloud/auth.js";
+import { signInWithGoogle, signOut, getCurrentUser, getRedirectUrl, isConfigured } from "./core/cloud/auth.js";
 import { initCloudSync, runCloudSync, scheduleCloudSync, getSyncStatus, clearSyncStatus } from "./cloud-sync.js";
 import {
   translateSubtitleBatch,
@@ -180,6 +180,7 @@ const HANDLERS = {
     user: await getCurrentUser(),
     sync: await getSyncStatus(),
     redirectUrl: getRedirectUrl(),
+    configured: isConfigured(),
   }),
   "auth:signIn": async () => {
     const user = await signInWithGoogle();

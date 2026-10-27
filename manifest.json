@@ -8,7 +8,9 @@
     "https://www.youtube.com/*",
     "https://translate.googleapis.com/*",
     "https://translate.google.com/*",
-    "https://algdqnztwyrcxuxqnzyp.supabase.co/*",
+    "https://www.googleapis.com/*",
+    "https://openidconnect.googleapis.com/*",
+    "https://oauth2.googleapis.com/*",
     "https://generativelanguage.googleapis.com/*"
   ],
   "background": {

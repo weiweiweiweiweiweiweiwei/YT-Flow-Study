@@ -1,78 +1,31 @@
 // ============================================================================
-// Google 登入（透過 Supabase Auth）
+// Google 登入（直接跟 Google 拿授權，不經過任何資料庫服務）
 // ============================================================================
 //
 // 只在 background service worker 執行。登入狀態集中放在這裡，
-// 設定頁、同步引擎都透過背景訊息來問，不會各自持有一份過期的 token。
+// 設定頁、同步都透過背景訊息來問，不會各自持有一份過期的 token。
 //
-// 流程（OAuth 授權碼 + PKCE）：
-//   1. 產生一次性的 code_verifier，把它的 SHA-256 當 code_challenge 送出去
-//   2. chrome.identity.launchWebAuthFlow 開一個登入視窗 → Supabase → Google
-//   3. 使用者選好帳號，Supabase 把使用者導回 https://<擴充功能ID>.chromiumapp.org/?code=…
-//      Chrome 攔下這個網址，把 code 交還給我們（視窗自動關閉）
-//   4. 拿 code + code_verifier 換 access_token / refresh_token
-// 用 PKCE 而不是直接把 token 放在網址裡回傳：就算 code 在過程中外洩，
-// 沒有 code_verifier 也換不到 token。
+// 要的權限只有三樣：
+//   drive.appdata —— 雲端硬碟裡「FlowStudy 專用的隱藏資料夾」，看不到使用者其他檔案
+//   openid / email / profile —— 在設定頁顯示「目前登入的是哪個帳號」
 //
-// 刻意不用 supabase-js：它要打包工具才能進 MV3 擴充功能，
-// 而我們只需要四個 HTTP 請求（authorize / token / refresh / logout）。
+// 流程：chrome.identity.launchWebAuthFlow 開 Google 的登入視窗，
+// 使用者同意後 Google 把 access token 放在網址裡導回 https://<擴充功能ID>.chromiumapp.org/，
+// Chrome 攔下這個網址交還給我們（視窗自動關閉）。
+//
+// 為什麼不拿 refresh token：那要把「用戶端密碼」放進擴充功能，任何人都能從原始碼裡看到。
+// access token 一小時過期，到時候用同一個視窗「不顯示畫面」再要一次（interactive: false），
+// 只要使用者的 Chrome 還登入著 Google、之前同意過，就會安靜地拿到新的，完全不用操作。
+// 拿不到（例如使用者在 Google 那邊撤銷了授權）才請使用者到設定頁按「重新登入」。
 // ============================================================================
 
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "./config.js";
+import { GOOGLE_CLIENT_ID, GOOGLE_SCOPES } from "./config.js";
 
-const SESSION_KEY = "flowstudyAuthSession";
-const REFRESH_MARGIN_SECONDS = 60; // 還剩一分鐘就過期時先換新，免得請求送到一半失效
+const SESSION_KEY = "flowstudyAuthGoogle";
+const OLD_SESSION_KEY = "flowstudyAuthSession"; // 以前 Supabase 的登入狀態，用不到了，順手清掉
+const REFRESH_MARGIN_SECONDS = 120;
 
-let refreshing = null; // 同一時間只換一次 token：refresh_token 用過一次就作廢
-
-// ---------- 小工具 ----------
-
-function base64url(bytes) {
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function randomVerifier() {
-  const bytes = new Uint8Array(48);
-  crypto.getRandomValues(bytes);
-  return base64url(bytes); // 64 個字元，落在 PKCE 規定的 43–128 之間
-}
-
-async function sha256(text) {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
-}
-
-async function authFetch(path, { method = "GET", body, accessToken } = {}) {
-  const headers = { apikey: SUPABASE_PUBLISHABLE_KEY };
-  if (body) headers["Content-Type"] = "application/json";
-  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-  const res = await fetch(`${SUPABASE_URL}/auth/v1${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  let data = null;
-  try {
-    data = await res.json();
-  } catch (e) {}
-  if (!res.ok) {
-    const err = new Error((data && (data.error_description || data.msg || data.message)) || `HTTP ${res.status}`);
-    err.status = res.status;
-    throw err;
-  }
-  return data;
-}
-
-function toSession(tokenResponse) {
-  const nowSec = Math.floor(Date.now() / 1000);
-  return {
-    access_token: tokenResponse.access_token,
-    refresh_token: tokenResponse.refresh_token,
-    expires_at: tokenResponse.expires_at || nowSec + (tokenResponse.expires_in || 3600),
-    user: tokenResponse.user || null,
-  };
-}
+let renewing = null; // 同一時間只換一次 token
 
 async function loadSession() {
   const data = await chrome.storage.local.get(SESSION_KEY);
@@ -84,136 +37,145 @@ async function saveSession(session) {
 }
 
 async function clearSession() {
-  await chrome.storage.local.remove(SESSION_KEY);
+  await chrome.storage.local.remove([SESSION_KEY, OLD_SESSION_KEY]);
 }
 
 // 給畫面顯示用的使用者資訊。token 不會離開背景。
 export function publicUser(session) {
   const u = session && session.user;
   if (!u) return null;
-  const meta = u.user_metadata || {};
-  return {
-    id: u.id,
-    email: u.email || "",
-    name: meta.full_name || meta.name || "",
-    avatarUrl: meta.avatar_url || meta.picture || "",
-  };
+  return { id: u.id, email: u.email || "", name: u.name || "", avatarUrl: u.picture || "" };
 }
-
-// ---------- 對外 ----------
 
 export function getRedirectUrl() {
   return chrome.identity.getRedirectURL();
 }
+
+export function isConfigured() {
+  return !!GOOGLE_CLIENT_ID;
+}
+
+function authorizeUrl({ interactive, loginHint }) {
+  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  url.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+  url.searchParams.set("redirect_uri", getRedirectUrl());
+  url.searchParams.set("response_type", "token");
+  url.searchParams.set("scope", GOOGLE_SCOPES.join(" "));
+  url.searchParams.set("include_granted_scopes", "true");
+  if (interactive) {
+    url.searchParams.set("prompt", "select_account"); // 第一次登入讓使用者自己選帳號
+  } else {
+    url.searchParams.set("prompt", "none"); // 背景換 token：不顯示任何畫面
+    if (loginHint) url.searchParams.set("login_hint", loginHint); // 有好幾個 Google 帳號時，指定要原本那一個
+  }
+  return url.toString();
+}
+
+async function requestToken({ interactive, loginHint }) {
+  let responseUrl;
+  try {
+    responseUrl = await chrome.identity.launchWebAuthFlow({ url: authorizeUrl({ interactive, loginHint }), interactive });
+  } catch (err) {
+    if (!interactive) throw new Error("Google 登入已過期，請在設定重新登入");
+    throw new Error(
+      `登入沒有完成（${(err && err.message) || err}）。` +
+        `如果 Google 顯示「redirect_uri_mismatch」，代表 Google Cloud 的 OAuth 用戶端還沒加入 ${getRedirectUrl()}`
+    );
+  }
+  const params = new URLSearchParams(new URL(responseUrl).hash.slice(1));
+  const error = params.get("error");
+  if (error) {
+    if (!interactive) throw new Error("Google 登入已過期，請在設定重新登入");
+    throw new Error("登入失敗：" + (params.get("error_description") || error));
+  }
+  const token = params.get("access_token");
+  if (!token) throw new Error("登入失敗：沒有收到 Google 的授權");
+  const granted = (params.get("scope") || "").split(" ");
+  if (!granted.includes("https://www.googleapis.com/auth/drive.appdata")) {
+    // Google 的同意畫面可以只勾一部分權限
+    throw new Error("需要允許 FlowStudy 使用雲端硬碟的應用程式資料夾，才能同步。請重新登入並勾選。");
+  }
+  const expiresIn = Number(params.get("expires_in")) || 3600;
+  return { accessToken: token, expiresAt: Math.floor(Date.now() / 1000) + expiresIn };
+}
+
+async function fetchProfile(accessToken) {
+  const res = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`讀取 Google 帳號資料失敗（HTTP ${res.status}）`);
+  const p = await res.json();
+  // 同步狀態依 id 分開存；加上前綴，跟以前 Supabase 的使用者 id 不會混在一起
+  return { id: "google:" + p.sub, email: p.email || "", name: p.name || "", picture: p.picture || "" };
+}
+
+// ---------- 對外 ----------
 
 export async function getCurrentUser() {
   return publicUser(await loadSession());
 }
 
 /**
- * 拿一個「現在可以用」的 access token，快過期就先換新。
- * 沒登入回傳 null。refresh_token 已經失效（例如在別處登出）就清掉登入狀態。
+ * 拿一個「現在可以用」的 access token，快過期就先在背景換新。
+ * 沒登入回傳 null；背景換不到新的就丟錯，請使用者重新登入（登入資訊留著，畫面上還看得到是誰）。
  */
 export async function getValidSession() {
   const session = await loadSession();
   if (!session) return null;
   const nowSec = Math.floor(Date.now() / 1000);
-  if (session.expires_at - REFRESH_MARGIN_SECONDS > nowSec) return session;
+  if (session.expiresAt - REFRESH_MARGIN_SECONDS > nowSec) return session;
+  return renewSession(session);
+}
 
-  if (!refreshing) {
-    refreshing = (async () => {
+function renewSession(session) {
+  if (!renewing) {
+    renewing = (async () => {
       try {
-        const data = await authFetch("/token?grant_type=refresh_token", {
-          method: "POST",
-          body: { refresh_token: session.refresh_token },
-        });
-        const next = toSession(data);
-        if (!next.user) next.user = session.user;
+        const t = await requestToken({ interactive: false, loginHint: session.user && session.user.email });
+        const next = { ...session, ...t };
         await saveSession(next);
         return next;
-      } catch (err) {
-        // 400/401 代表 refresh_token 本身已經無效，留著也沒用，改成登出狀態。
-        // 網路斷線之類的暫時性錯誤則保留登入狀態，下次再試。
-        if (err.status === 400 || err.status === 401) {
-          await clearSession();
-          const expired = new Error("登入已過期，請重新登入");
-          expired.code = "SIGNED_OUT";
-          throw expired;
-        }
-        throw err;
       } finally {
-        refreshing = null;
+        renewing = null;
       }
     })();
   }
-  return refreshing;
+  return renewing;
 }
 
-/** access token 被伺服器拒絕（401）時呼叫：強制換一次新的。 */
-export async function forceRefresh() {
+/** 雲端硬碟拒絕了 token（401）：強制換一次新的，回傳新的 token。 */
+export async function forceRenewToken() {
   const session = await loadSession();
   if (!session) return null;
-  await saveSession({ ...session, expires_at: 0 });
-  return getValidSession();
+  const next = await renewSession(session);
+  return next.accessToken;
+}
+
+export async function getAccessToken() {
+  const session = await getValidSession();
+  return session ? session.accessToken : null;
 }
 
 export async function signInWithGoogle() {
-  // 先確認 Supabase 那邊已經啟用 Google 登入。沒啟用的話登入視窗只會顯示一段 JSON 錯誤，
-  // 使用者看不懂，這裡直接給一句人話。
-  const settings = await authFetch("/settings");
-  if (!settings || !settings.external || !settings.external.google) {
-    throw new Error("Supabase 還沒啟用 Google 登入（Authentication → Sign In / Providers → Google）");
+  if (!isConfigured()) {
+    throw new Error("還沒設定 Google 登入用的用戶端 ID（core/cloud/config.js 的 GOOGLE_CLIENT_ID）");
   }
-
-  const verifier = randomVerifier();
-  const challenge = base64url(await sha256(verifier));
-  const redirectTo = getRedirectUrl();
-
-  const url = new URL(`${SUPABASE_URL}/auth/v1/authorize`);
-  url.searchParams.set("provider", "google");
-  url.searchParams.set("redirect_to", redirectTo);
-  url.searchParams.set("code_challenge", challenge);
-  url.searchParams.set("code_challenge_method", "s256");
-  url.searchParams.set("prompt", "select_account"); // 每次都讓使用者選帳號，不要默默用上次那個
-
-  let responseUrl;
-  try {
-    responseUrl = await chrome.identity.launchWebAuthFlow({ url: url.toString(), interactive: true });
-  } catch (err) {
-    // 最常見的兩種：使用者自己關掉視窗；或 Supabase 不認得我們的回傳網址，
-    // 把人導到預設的 Site URL（通常是 localhost:3000），Chrome 等不到回傳網址。
-    throw new Error(
-      `登入沒有完成（${(err && err.message) || err}）。` +
-        `如果登入後出現打不開的 localhost 頁面，代表 Supabase 的 Redirect URLs 還沒加入 ${redirectTo}`
-    );
-  }
-
-  const back = new URL(responseUrl);
-  const hash = new URLSearchParams(back.hash.slice(1));
-  const oauthError =
-    back.searchParams.get("error_description") || hash.get("error_description") || back.searchParams.get("error");
-  if (oauthError) throw new Error("登入失敗：" + oauthError);
-
-  const code = back.searchParams.get("code");
-  if (!code) throw new Error("登入失敗：沒有收到授權碼");
-
-  const data = await authFetch("/token?grant_type=pkce", {
-    method: "POST",
-    body: { auth_code: code, code_verifier: verifier },
-  });
-  const session = toSession(data);
+  const t = await requestToken({ interactive: true });
+  const user = await fetchProfile(t.accessToken);
+  const session = { ...t, user };
+  await chrome.storage.local.remove(OLD_SESSION_KEY);
   await saveSession(session);
   return publicUser(session);
 }
 
 export async function signOut() {
   const session = await loadSession();
-  if (session) {
+  if (session && session.accessToken) {
     try {
-      // scope=local：只登出這個瀏覽器，不影響使用者在其他地方的登入
-      await authFetch("/logout?scope=local", { method: "POST", accessToken: session.access_token });
+      // 撤銷這個 token。之後要再同步，得重新登入、重新同意
+      await fetch("https://oauth2.googleapis.com/revoke?token=" + encodeURIComponent(session.accessToken), { method: "POST" });
     } catch (e) {
-      // 伺服器那邊失敗也沒關係，本機的登入狀態照樣清掉
+      // 撤銷失敗也沒關係，本機的登入狀態照樣清掉
     }
   }
   await clearSession();
