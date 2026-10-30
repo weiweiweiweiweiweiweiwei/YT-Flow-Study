@@ -155,6 +155,12 @@ class NativeHub(private val activity: MainActivity, userAgent: String) {
                     }
                 }
 
+                // 播放器齒輪裡的「同步到電腦」：只是打開設定頁，YouTube 頁面也可以要求
+                "openSync" -> {
+                    activity.showSettings()
+                    reply(proxy, id, null)
+                }
+
                 "openUrl" -> {
                     activity.openUrl(m.optString("url"))
                     reply(proxy, id, null)

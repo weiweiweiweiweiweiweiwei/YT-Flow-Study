@@ -14,7 +14,7 @@ object Scripts {
     const val APP_ORIGIN = "https://$APP_HOST"
     const val EXT_BASE = "$APP_ORIGIN/assets/ext/"
     const val BACKGROUND_URL = "$APP_ORIGIN/assets/shell/background.html"
-    const val REVIEW_URL = "${EXT_BASE}review.html"
+    const val SETTINGS_URL = "${EXT_BASE}review.html?view=settings"
 
     val YOUTUBE_ORIGINS = setOf("https://www.youtube.com", "https://m.youtube.com")
 
@@ -32,8 +32,9 @@ object Scripts {
             .toString()
 
     /**
-     * YouTube 頁面：對應 manifest.json 的三組 content_scripts。
+     * YouTube 頁面：對應 manifest.json 的三組 content_scripts，再加上 Android 版自己的擋廣告與手機版轉接。
      *
+     *   0. adblock.js —— 要比 YouTube 的程式更早，才攔得到播放器資料裡的廣告
      *   1. yt-player-bridge.js —— MAIN world、document_start（原樣執行，越早越好）
      *   2. normalize.js + sentence-timeline.js + content.js + content.css —— 等 DOM 好了再跑
      *   3. web-lookup.js（任何網頁反白按 Z 查字）
@@ -48,9 +49,11 @@ object Scripts {
             "content.js" to "ext/content.js",
             "web-lookup.js" to "ext/web-lookup.js",
             "touch.js" to "shell/touch.js",
+            "mobile.js" to "shell/mobile.js",
         )
         return buildString {
             append(asset(context, "shell/youtube-prelude.js")).append("\n;\n")
+            append(asset(context, "shell/adblock.js")).append("\n;\n")
             append("if (window.top === window) {\n")
             append(asset(context, "ext/yt-player-bridge.js"))
             append("\n}\n;\n")
@@ -100,6 +103,16 @@ object Scripts {
             Object.defineProperty(api, "__flowstudy", { value: true });
             Object.defineProperty(window, "chrome", { value: api, configurable: true, writable: true });
             installNativeFetch();
+            // 手機上只用設定頁（Google 登入同步），不顯示首頁、記憶固化這些側邊欄連結
+            if (ctx === "page") {
+              const hideNav = () => {
+                const style = document.createElement("style");
+                style.textContent = ".sidebar, .topbar { display: none !important; } .main { padding-left: 0 !important; }";
+                document.head.appendChild(style);
+              };
+              if (document.head) hideNav();
+              else document.addEventListener("DOMContentLoaded", hideNav, { once: true });
+            }
             })();
             """.trimIndent()
         )

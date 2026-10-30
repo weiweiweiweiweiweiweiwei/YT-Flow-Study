@@ -39,34 +39,27 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 
 /**
- * 整個 App 就這一個畫面：
+ * 整個 App 就是一個手機版 YouTube（m.youtube.com），注入 content.js 等，跟電腦上裝擴充功能一樣。
  *
- *   ┌──────────────────────────────┐
- *   │  YouTube（桌面版網頁）         │ ← 注入 content.js 等，跟電腦上裝擴充功能一樣
- *   │  或 學習面板（review.html）    │
- *   ├──────────────────────────────┤
- *   │ YouTube 面板 ◀上句 ↻重播 下句▶ ⟳│ ← 手機沒有鍵盤，a/s/d 改成按鈕
- *   └──────────────────────────────┘
- *   另外還有一個 1×1、看不見的 WebView 跑 background.js。
+ * - 看影片時右側有一排半透明的「◀ ↻ ▶」：手機沒有鍵盤，a/s/d 改成按鈕
+ * - 另外有一個 1×1、看不見的 WebView 跑 background.js
+ * - 同步設定頁（review.html 的設定）平常不出現，只在播放器齒輪裡點「同步到電腦」時才打開
  */
 class MainActivity : ComponentActivity() {
 
     private lateinit var hub: NativeHub
     private lateinit var youtube: FlowWebView
-    private lateinit var review: WebView
+    private lateinit var settingsView: WebView
     private lateinit var backgroundView: WebView
 
     private lateinit var root: FrameLayout
     private lateinit var fullscreenHost: FrameLayout
-    private lateinit var bottomBar: LinearLayout
-    private lateinit var tabYoutube: TextView
-    private lateinit var tabReview: TextView
-    private val sentenceButtons = ArrayList<View>()
+    private lateinit var sentencePill: View
 
-    private var reviewLoaded = false
-    private var reviewVisible = false
+    private var settingsVisible = false
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -105,7 +98,7 @@ class MainActivity : ComponentActivity() {
 
         buildLayout()
         setupBackground(installReason)
-        setupReview(installReason)
+        setupSettings(installReason)
         setupYoutube(defaultUa)
 
         onBackPressedDispatcher.addCallback(this) { handleBack() }
@@ -127,7 +120,7 @@ class MainActivity : ComponentActivity() {
         youtube.onResume()
         hub.auth.onActivityResumed()
 
-        // 回到 App 時跟雲端對一次帳（剛啟動時 background.js 自己會做，不用重複）
+        // 回到 App 時跟雲端對一次帳（剛啟動時 background.js 自己會做，不用重複；沒登入就什麼都不做）
         if (!firstResume && lastResumeAt - lastResumeSyncAt > RESUME_SYNC_INTERVAL_MS) {
             lastResumeSyncAt = lastResumeAt
             hub.sendToBackground(JSONObject().put("type", "sync:now"))
@@ -149,16 +142,16 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         if (::hub.isInitialized) {
             hub.flush()
-            listOf(youtube, review, backgroundView).forEach { it.destroy() }
+            listOf(youtube, settingsView, backgroundView).forEach { it.destroy() }
         }
         super.onDestroy()
     }
 
     // ---------- 給 NativeHub / LoopbackAuth 用 ----------
 
-    /** 背景換 Google token 會閃一下瀏覽器分頁，只在「剛打開 App」或「正在看學習面板」時允許。 */
+    /** 背景換 Google token 會閃一下瀏覽器分頁，只在「剛打開 App」或「正在看同步設定」時允許。 */
     fun allowSilentAuth(): Boolean =
-        isResumedNow && (reviewVisible || SystemClock.elapsedRealtime() - lastResumeAt < 20_000)
+        isResumedNow && (settingsVisible || SystemClock.elapsedRealtime() - lastResumeAt < 20_000)
 
     fun bringToFront() {
         startActivity(
@@ -170,10 +163,20 @@ class MainActivity : ComponentActivity() {
         if (url.isEmpty()) return
         val uri = Uri.parse(url)
         when {
-            isYoutube(uri) -> showYoutube(toDesktopYoutube(uri).toString())
-            uri.host == Scripts.APP_HOST -> showReview(url)
+            isYoutube(uri) -> showYoutube(toMobileYoutube(uri).toString())
+            uri.host == Scripts.APP_HOST -> showSettings()
             else -> openExternal(uri)
         }
+    }
+
+    /** 播放器齒輪 →「同步到電腦」：打開 Google 登入與同步的設定頁。 */
+    fun showSettings() {
+        if (customView != null) customViewCallback?.onCustomViewHidden()
+        settingsVisible = true
+        youtube.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){ v.pause(); });", null)
+        settingsView.loadUrl(Scripts.SETTINGS_URL)
+        settingsView.visibility = View.VISIBLE
+        updateSentencePill()
     }
 
     // ---------- 版面 ----------
@@ -181,33 +184,17 @@ class MainActivity : ComponentActivity() {
     private fun buildLayout() {
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
 
-        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val pages = FrameLayout(this)
-
         youtube = FlowWebView(this)
-        review = WebView(this).apply { visibility = View.GONE }
-        pages.addView(youtube, FrameLayout.LayoutParams(MATCH, MATCH))
-        pages.addView(review, FrameLayout.LayoutParams(MATCH, MATCH))
-        column.addView(pages, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        root.addView(youtube, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        bottomBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#111827"))
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        tabYoutube = barButton("YouTube") { showYoutube(null) }
-        tabReview = barButton("學習面板") { showReview(null) }
-        bottomBar.addView(tabYoutube, LinearLayout.LayoutParams(0, dp(48), 1.1f))
-        bottomBar.addView(tabReview, LinearLayout.LayoutParams(0, dp(48), 1.1f))
-        for ((label, key) in listOf("◀ 上句" to "a", "↻ 重播" to "s", "下句 ▶" to "d")) {
-            val b = barButton(label) { pressKey(key) }
-            sentenceButtons.add(b)
-            bottomBar.addView(b, LinearLayout.LayoutParams(0, dp(48), 1f))
-        }
-        bottomBar.addView(barButton("⟳") { reloadCurrent() }, LinearLayout.LayoutParams(dp(44), dp(48)))
-        column.addView(bottomBar, LinearLayout.LayoutParams(MATCH, ViewGroup.LayoutParams.WRAP_CONTENT))
+        sentencePill = sentenceControls()
+        root.addView(sentencePill, pillLayoutParams(fullscreen = false))
 
-        root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
+        settingsView = WebView(this).apply {
+            visibility = View.GONE
+            setBackgroundColor(Color.WHITE)
+        }
+        root.addView(settingsView, FrameLayout.LayoutParams(MATCH, MATCH))
 
         // 背景頁：要掛在畫面上（只有 1×1、完全透明），WebView 才會被當成「可見」而正常執行
         backgroundView = WebView(this).apply { alpha = 0f }
@@ -220,47 +207,54 @@ class MainActivity : ComponentActivity() {
         root.addView(fullscreenHost, FrameLayout.LayoutParams(MATCH, MATCH))
 
         setContentView(root)
-        updateTabs()
+        updateSentencePill()
     }
 
-    private fun barButton(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
-        text = label
-        setTextColor(Color.parseColor("#E5E7EB"))
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-        gravity = Gravity.CENTER
-        maxLines = 1
-        val outValue = TypedValue()
-        context.theme.resolveAttribute(android.R.attr.selectableItemBackground, outValue, true)
-        setBackgroundResource(outValue.resourceId)
-        setOnClickListener { onClick() }
-    }
-
-    /** 全螢幕時右側那一排半透明的句子按鈕。 */
-    private fun fullscreenControls(): View {
+    /** 右側那一排半透明的句子按鈕（◀ 上一句、↻ 重播、▶ 下一句）。 */
+    private fun sentenceControls(): View {
         val pill = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 cornerRadius = dp(22).toFloat()
-                setColor(Color.argb(90, 0, 0, 0))
+                setColor(Color.argb(110, 0, 0, 0))
             }
-            alpha = 0.75f
+            alpha = 0.8f
         }
         for ((label, key) in listOf("◀" to "a", "↻" to "s", "▶" to "d")) {
-            pill.addView(barButton(label) { pressKey(key) }.apply {
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            pill.addView(TextView(this).apply {
+                text = label
                 setTextColor(Color.WHITE)
-            }, LinearLayout.LayoutParams(dp(48), dp(52)))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                gravity = Gravity.CENTER
+                val outValue = TypedValue()
+                context.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, outValue, true)
+                setBackgroundResource(outValue.resourceId)
+                setOnClickListener { pressKey(key) }
+            }, LinearLayout.LayoutParams(dp(46), dp(50)))
         }
         return pill
     }
 
-    private fun updateTabs() {
-        val active = Color.parseColor("#60A5FA")
-        val idle = Color.parseColor("#E5E7EB")
-        tabYoutube.setTextColor(if (reviewVisible) idle else active)
-        tabReview.setTextColor(if (reviewVisible) active else idle)
-        val onWatchPage = !reviewVisible && (youtube.url ?: "").contains("/watch")
-        sentenceButtons.forEach { it.visibility = if (onWatchPage) View.VISIBLE else View.GONE }
+    private fun pillLayoutParams(fullscreen: Boolean) = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT,
+        if (fullscreen) Gravity.END or Gravity.CENTER_VERTICAL else Gravity.END or Gravity.BOTTOM,
+    ).apply {
+        marginEnd = dp(6)
+        if (!fullscreen) bottomMargin = dp(96)
+    }
+
+    /** 只在觀看頁出現；全螢幕時搬到全螢幕畫面的右側中間。 */
+    private fun updateSentencePill() {
+        val url = youtube.url ?: ""
+        val onWatchPage = url.contains("/watch") || url.contains("/shorts/")
+        sentencePill.visibility = if (onWatchPage && !settingsVisible) View.VISIBLE else View.GONE
+    }
+
+    private fun moveSentencePill(toFullscreen: Boolean) {
+        (sentencePill.parent as? ViewGroup)?.removeView(sentencePill)
+        if (toFullscreen) fullscreenHost.addView(sentencePill, pillLayoutParams(fullscreen = true))
+        else root.addView(sentencePill, 1, pillLayoutParams(fullscreen = false))
     }
 
     // ---------- 三個 WebView ----------
@@ -298,12 +292,12 @@ class MainActivity : ComponentActivity() {
         backgroundView.loadUrl(Scripts.BACKGROUND_URL)
     }
 
-    private fun setupReview(installReason: String?) {
-        commonSettings(review)
-        WebViewCompat.addWebMessageListener(review, BRIDGE_NAME, setOf(Scripts.APP_ORIGIN), hub.listener)
-        WebViewCompat.addDocumentStartJavaScript(review, Scripts.page(this, installReason), setOf(Scripts.APP_ORIGIN))
-        review.webViewClient = AppPageClient()
-        review.webChromeClient = object : LoggingChromeClient("review") {
+    private fun setupSettings(installReason: String?) {
+        commonSettings(settingsView)
+        WebViewCompat.addWebMessageListener(settingsView, BRIDGE_NAME, setOf(Scripts.APP_ORIGIN), hub.listener)
+        WebViewCompat.addDocumentStartJavaScript(settingsView, Scripts.page(this, installReason), setOf(Scripts.APP_ORIGIN))
+        settingsView.webViewClient = AppPageClient()
+        settingsView.webChromeClient = object : LoggingChromeClient("settings") {
             override fun onShowFileChooser(
                 webView: WebView,
                 callback: ValueCallback<Array<Uri>>,
@@ -326,18 +320,17 @@ class MainActivity : ComponentActivity() {
     private fun setupYoutube(defaultUa: String) {
         commonSettings(youtube)
         with(youtube.settings) {
-            // 用桌面版 YouTube：content.js 是照桌面版的播放器（#movie_player、.ytp-*）寫的，
-            // 手機版網頁（m.youtube.com）的結構完全不同。
-            userAgentString = desktopUserAgent(defaultUa)
+            // 一律用手機版 YouTube（平板也是），版面照網頁自己的 viewport，不能兩指縮放
+            userAgentString = mobileUserAgent(defaultUa)
             useWideViewPort = true
-            loadWithOverviewMode = true
-            setSupportZoom(true)
-            builtInZoomControls = true
+            loadWithOverviewMode = false
+            setSupportZoom(false)
+            builtInZoomControls = false
             displayZoomControls = false
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(youtube, true)
         WebViewCompat.addWebMessageListener(youtube, BRIDGE_NAME, Scripts.YOUTUBE_ORIGINS, hub.listener)
-        WebViewCompat.addDocumentStartJavaScript(youtube, Scripts.youtube(this), setOf("https://www.youtube.com"))
+        WebViewCompat.addDocumentStartJavaScript(youtube, Scripts.youtube(this), Scripts.YOUTUBE_ORIGINS)
 
         youtube.onLookupSelection = { mode ->
             youtube.evaluateJavascript(Scripts.pressKey("z")) { mode.finish() }
@@ -346,8 +339,8 @@ class MainActivity : ComponentActivity() {
         youtube.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val uri = request.url
-                if (uri.host == "m.youtube.com" || uri.host == "youtu.be") {
-                    view.loadUrl(toDesktopYoutube(uri).toString())
+                if (uri.host == "www.youtube.com" || uri.host == "youtube.com" || uri.host == "youtu.be") {
+                    view.loadUrl(toMobileYoutube(uri).toString())
                     return true
                 }
                 if (isAllowedInYoutubeView(uri)) return false
@@ -356,8 +349,14 @@ class MainActivity : ComponentActivity() {
                 return true
             }
 
+            // 廣告：在網路層直接擋掉廣告與廣告追蹤的請求（影片裡的廣告另外由 adblock.js 處理）
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                if (!AdBlock.shouldBlock(request.url)) return null
+                return WebResourceResponse("text/plain", "utf-8", 200, "OK", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+            }
+
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
-                updateTabs() // YouTube 是單頁應用，換影片不會重新載入頁面，只會走到這裡
+                updateSentencePill() // YouTube 是單頁應用，換影片不會重新載入頁面，只會走到這裡
             }
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -388,7 +387,7 @@ class MainActivity : ComponentActivity() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val uri = request.url
             if (uri.host == Scripts.APP_HOST) return false
-            openUrl(uri.toString()) // 學習面板裡的影片連結 → 切到 YouTube 分頁播放
+            openUrl(uri.toString())
             return true
         }
 
@@ -419,29 +418,16 @@ class MainActivity : ComponentActivity() {
     // ---------- 切換畫面 ----------
 
     private fun showYoutube(url: String?) {
-        reviewVisible = false
-        review.visibility = View.GONE
-        youtube.visibility = View.VISIBLE
+        hideSettings()
         if (url != null) youtube.loadUrl(url)
-        updateTabs()
     }
 
-    private fun showReview(url: String?) {
-        reviewVisible = true
-        youtube.visibility = View.GONE
-        review.visibility = View.VISIBLE
-        // 學習面板每次切過來都重新整理一次，才看得到剛剛在影片裡收藏的單字
-        if (url != null) review.loadUrl(url)
-        else if (!reviewLoaded) review.loadUrl(Scripts.REVIEW_URL)
-        else review.reload()
-        reviewLoaded = true
-        // 切走時影片先停下來，不然學習面板開著還在背景播
-        youtube.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){ v.pause(); });", null)
-        updateTabs()
-    }
-
-    private fun reloadCurrent() {
-        if (reviewVisible) review.reload() else youtube.reload()
+    private fun hideSettings() {
+        if (!settingsVisible) return
+        settingsVisible = false
+        settingsView.visibility = View.GONE
+        settingsView.loadUrl("about:blank")
+        updateSentencePill()
     }
 
     private fun pressKey(key: String) {
@@ -451,8 +437,7 @@ class MainActivity : ComponentActivity() {
     private fun handleBack() {
         when {
             customView != null -> customViewCallback?.onCustomViewHidden()
-            reviewVisible && review.canGoBack() -> review.goBack()
-            reviewVisible -> showYoutube(null)
+            settingsVisible -> hideSettings()
             youtube.canGoBack() -> youtube.goBack()
             else -> moveTaskToBack(true) // 保留畫面狀態，下次打開回到原本那部影片
         }
@@ -468,9 +453,7 @@ class MainActivity : ComponentActivity() {
         customView = view
         customViewCallback = callback
         fullscreenHost.addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
-        fullscreenHost.addView(fullscreenControls(), FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.CENTER_VERTICAL,
-        ).apply { marginEnd = dp(8) })
+        moveSentencePill(toFullscreen = true)
         fullscreenHost.visibility = View.VISIBLE
 
         WindowCompat.getInsetsController(window, window.decorView).apply {
@@ -485,12 +468,14 @@ class MainActivity : ComponentActivity() {
 
     private fun exitFullscreen() {
         if (customView == null) return
+        moveSentencePill(toFullscreen = false)
         fullscreenHost.removeAllViews()
         fullscreenHost.visibility = View.GONE
         customView = null
         customViewCallback = null
         WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        updateSentencePill()
     }
 
     // ---------- 外部開啟：分享進來的 YouTube 連結 ----------
@@ -504,7 +489,7 @@ class MainActivity : ComponentActivity() {
             val link = Regex("https?://\\S+").find(text)?.value ?: return false
             val uri = Uri.parse(link)
             if (!isYoutube(uri)) return false
-            showYoutube(toDesktopYoutube(uri).toString())
+            showYoutube(toMobileYoutube(uri).toString())
             return true
         }
         return false
@@ -530,15 +515,15 @@ class MainActivity : ComponentActivity() {
         return host == "consent.google.com" || host == "accounts.google.com" || host.endsWith(".google.com") && uri.path?.startsWith("/sorry") == true
     }
 
-    private fun toDesktopYoutube(uri: Uri): Uri {
+    private fun toMobileYoutube(uri: Uri): Uri {
         if (uri.host == "youtu.be") {
             val id = uri.lastPathSegment ?: return Uri.parse(HOME_URL)
-            val b = Uri.parse("https://www.youtube.com/watch").buildUpon().appendQueryParameter("v", id)
+            val b = Uri.parse("https://m.youtube.com/watch").buildUpon().appendQueryParameter("v", id)
             uri.getQueryParameter("t")?.let { b.appendQueryParameter("t", it) }
             return b.build()
         }
-        if (uri.host == "m.youtube.com" || uri.host == "youtube.com" || uri.host == "music.youtube.com") {
-            return uri.buildUpon().scheme("https").authority("www.youtube.com").build()
+        if (uri.host == "www.youtube.com" || uri.host == "youtube.com" || uri.host == "music.youtube.com") {
+            return uri.buildUpon().scheme("https").authority("m.youtube.com").build()
         }
         return uri
     }
@@ -554,9 +539,10 @@ class MainActivity : ComponentActivity() {
         return if (last == -1) "install" else "update"
     }
 
-    private fun desktopUserAgent(defaultUa: String): String {
+    /** 拿掉 WebView 標記、一律宣稱是手機，平板也會拿到手機版 YouTube。 */
+    private fun mobileUserAgent(defaultUa: String): String {
         val chrome = Regex("Chrome/([\\d.]+)").find(defaultUa)?.groupValues?.get(1) ?: "130.0.0.0"
-        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chrome Safari/537.36"
+        return "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chrome Mobile Safari/537.36"
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -564,7 +550,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "FlowStudy"
         private const val BRIDGE_NAME = "FlowStudyNative"
-        private const val HOME_URL = "https://www.youtube.com/"
+        private const val HOME_URL = "https://m.youtube.com/"
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val RESUME_SYNC_INTERVAL_MS = 20 * 60 * 1000L
     }
