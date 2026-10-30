@@ -207,6 +207,7 @@ class NativeHub(private val activity: MainActivity, userAgent: String) {
 
     private fun broadcastChanges(area: String, changes: JSONObject) {
         if (changes.length() == 0) return
+        if (area != "session" && changes.has(MainActivity.SENTENCE_BUTTONS_KEY)) activity.updateSentencePill()
         for (frame in frames.toList()) {
             val visible = if (frame.trusted) changes else withoutPrivateKeys(changes)
             if (visible.length() == 0) continue

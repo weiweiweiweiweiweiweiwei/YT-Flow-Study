@@ -42,13 +42,14 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 
 /**
  * 整個 App 就是一個手機版 YouTube（m.youtube.com），注入 content.js 等，跟電腦上裝擴充功能一樣。
  *
- * - 看影片時右側有一排半透明的「◀ ↻ ▶」：手機沒有鍵盤，a/s/d 改成按鈕
+ * - 全螢幕時右側可以顯示一排半透明的「◀ ↻ ▶」（a/s/d 的按鈕版，設定裡打開）
  * - 切到背景時影片繼續播（PlaybackService）；Shorts 一律不開
  * - 另外有一個 1×1、看不見的 WebView 跑 background.js
  * - 同步設定頁（review.html 的設定）平常不出現，只在播放器齒輪裡點「同步到電腦」時才打開
@@ -275,11 +276,11 @@ class MainActivity : ComponentActivity() {
         if (!fullscreen) bottomMargin = dp(96)
     }
 
-    /** 只在觀看頁出現；全螢幕時搬到全螢幕畫面的右側中間。 */
-    private fun updateSentencePill() {
-        val url = youtube.url ?: ""
-        val onWatchPage = url.contains("/watch")
-        sentencePill.visibility = if (onWatchPage && !settingsVisible) View.VISIBLE else View.GONE
+    /** 只在影片全螢幕、而且設定裡「句子按鈕」打開時出現（手機上少用，預設關閉）。 */
+    fun updateSentencePill() {
+        if (!::sentencePill.isInitialized) return
+        val enabled = hub.local.get(JSONArray().put(SENTENCE_BUTTONS_KEY)).optBoolean(SENTENCE_BUTTONS_KEY, false)
+        sentencePill.visibility = if (enabled && customView != null && !settingsVisible) View.VISIBLE else View.GONE
     }
 
     private fun moveSentencePill(toFullscreen: Boolean) {
@@ -511,6 +512,7 @@ class MainActivity : ComponentActivity() {
         fullscreenHost.addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
         moveSentencePill(toFullscreen = true)
         fullscreenHost.visibility = View.VISIBLE
+        updateSentencePill()
 
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -613,5 +615,7 @@ class MainActivity : ComponentActivity() {
         private const val HOME_URL = "https://m.youtube.com/"
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val RESUME_SYNC_INTERVAL_MS = 20 * 60 * 1000L
+        /** mobile.js 設定視窗裡「句子按鈕」開關存的 chrome.storage.local key */
+        const val SENTENCE_BUTTONS_KEY = "flowstudyAndroidSentenceButtons"
     }
 }
