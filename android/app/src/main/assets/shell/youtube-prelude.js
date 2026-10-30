@@ -43,3 +43,34 @@
     document.addEventListener(type, swallow, true);
   }
 })();
+
+// ============================================================================
+// 讓 YouTube 把這裡當成一般的 Chrome，而不是「App 裡的 WebView」。
+// WebView 在 navigator.userAgentData 裡自稱 "Android WebView"，YouTube 看到就會給
+// 另一套版面（進度條內縮、看影片時頂端的 YouTube 列不會收起來）。
+// 網路請求的標頭由 App 那邊處理（MainActivity.disguiseAsChrome）。
+// ============================================================================
+(function () {
+  if (window.top !== window) return;
+  try {
+    const real = navigator.userAgentData;
+    if (!real) return;
+    const fix = (list) =>
+      (list || []).map((b) => (/webview/i.test(b.brand) ? { brand: "Google Chrome", version: b.version } : b));
+    const brands = fix(real.brands);
+    const fake = {
+      brands,
+      mobile: true,
+      platform: "Android",
+      getHighEntropyValues: (hints) =>
+        real.getHighEntropyValues(hints).then((v) => {
+          const out = Object.assign({}, v, { mobile: true, platform: "Android" });
+          if (v.brands) out.brands = fix(v.brands);
+          if (v.fullVersionList) out.fullVersionList = fix(v.fullVersionList);
+          return out;
+        }),
+      toJSON: () => ({ brands, mobile: true, platform: "Android" }),
+    };
+    Object.defineProperty(Navigator.prototype, "userAgentData", { configurable: true, get: () => fake });
+  } catch (e) {}
+})();

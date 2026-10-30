@@ -39,6 +39,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -239,6 +241,10 @@ class MainActivity : ComponentActivity() {
         root.addView(fullscreenHost, FrameLayout.LayoutParams(MATCH, MATCH))
 
         setContentView(root)
+        // 轉向、鍵盤升起時畫面高度會變，往上推的高度要重新算
+        root.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop && topCropPx > 0) root.post { applyTopCrop() }
+        }
         updateSentencePill()
     }
 
@@ -353,13 +359,14 @@ class MainActivity : ComponentActivity() {
         commonSettings(youtube)
         with(youtube.settings) {
             // 一律用手機版 YouTube（平板也是），版面照網頁自己的 viewport，不能兩指縮放
-            userAgentString = mobileUserAgent(defaultUa)
+            userAgentString = mobileUserAgent(chromeVersion(defaultUa))
             useWideViewPort = true
             loadWithOverviewMode = false
             setSupportZoom(false)
             builtInZoomControls = false
             displayZoomControls = false
         }
+        disguiseAsChrome(youtube.settings, chromeVersion(defaultUa))
         CookieManager.getInstance().setAcceptThirdPartyCookies(youtube, true)
         WebViewCompat.addWebMessageListener(youtube, BRIDGE_NAME, Scripts.YOUTUBE_ORIGINS, hub.listener)
         WebViewCompat.addDocumentStartJavaScript(youtube, Scripts.youtube(this), Scripts.YOUTUBE_ORIGINS)
@@ -601,10 +608,80 @@ class MainActivity : ComponentActivity() {
         return if (last == -1) "install" else "update"
     }
 
-    /** 拿掉 WebView 標記、一律宣稱是手機，平板也會拿到手機版 YouTube。 */
-    private fun mobileUserAgent(defaultUa: String): String {
-        val chrome = Regex("Chrome/([\\d.]+)").find(defaultUa)?.groupValues?.get(1) ?: "130.0.0.0"
-        return "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chrome Mobile Safari/537.36"
+    private fun chromeVersion(defaultUa: String): String =
+        Regex("Chrome/([\\d.]+)").find(defaultUa)?.groupValues?.get(1) ?: "130.0.0.0"
+
+    /** 跟手機版 Chrome 一字不差的 User-Agent（Chrome 現在固定寫 Android 10、型號 K、版本只留主版號）。平板也會拿到手機版 YouTube。 */
+    private fun mobileUserAgent(chrome: String): String {
+        val major = chrome.substringBefore('.')
+        return "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$major.0.0.0 Mobile Safari/537.36"
+    }
+
+    /**
+     * 除了 User-Agent，WebView 還有兩個地方會洩漏「我是 App 裡的 WebView」，YouTube 看到就給另一套版面
+     * （進度條內縮、看影片時頂端的 YouTube 列不會收起來）：
+     *   - 每個請求都帶 X-Requested-With: com.flowstudy.app
+     *   - Sec-CH-UA 標頭的品牌寫的是 "Android WebView"
+     * 兩個都改成跟 Chrome 一樣。舊版 WebView 不支援的話就算了。
+     */
+    private fun disguiseAsChrome(settings: WebSettings, chrome: String) {
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+                WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
+            }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+                val major = chrome.substringBefore('.')
+                val brands = listOf(
+                    "Chromium" to major,
+                    "Google Chrome" to major,
+                    "Not?A_Brand" to "99",
+                ).map { (brand, version) ->
+                    UserAgentMetadata.BrandVersion.Builder()
+                        .setBrand(brand)
+                        .setMajorVersion(version)
+                        .setFullVersion(if (version == major) chrome else "$version.0.0.0")
+                        .build()
+                }
+                WebSettingsCompat.setUserAgentMetadata(
+                    settings,
+                    UserAgentMetadata.Builder()
+                        .setBrandVersionList(brands)
+                        .setFullVersion(chrome)
+                        .setPlatform("Android")
+                        .setPlatformVersion("14.0.0")
+                        .setModel("")
+                        .setMobile(true)
+                        .build(),
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "無法調整 WebView 的瀏覽器識別資訊", e)
+        }
+    }
+
+    // ---------- 看影片時把頂端的 YouTube 列推到畫面外 ----------
+    //
+    // 手機版 Chrome 看影片時頂端只剩播放器；App 裡 YouTube 有時候還是把「YouTube 標誌、搜尋」那一列留著。
+    // mobile.js 量出那一列的高度回報過來，這裡把整個 WebView 往上移那麼多、高度加那麼多，
+    // 那一列就剛好落在畫面外，播放器貼齊頂端。離開觀看頁時回報 0，復原。
+    private var topCropPx = 0
+
+    fun setTopCrop(px: Int) {
+        val value = px.coerceIn(0, dp(120))
+        if (value == topCropPx) return
+        topCropPx = value
+        applyTopCrop()
+    }
+
+    private fun applyTopCrop() {
+        val height = root.height
+        if (topCropPx == 0 || height == 0) {
+            youtube.translationY = 0f
+            youtube.layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
+        } else {
+            youtube.translationY = -topCropPx.toFloat()
+            youtube.layoutParams = FrameLayout.LayoutParams(MATCH, height + topCropPx)
+        }
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()

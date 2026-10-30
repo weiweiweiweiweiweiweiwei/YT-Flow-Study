@@ -160,6 +160,11 @@ class NativeHub(private val activity: MainActivity, userAgent: String) {
                     activity.onVideoPlaying(m.optBoolean("playing"))
                 }
 
+                // 觀看頁頂端 YouTube 列的高度（裝置像素），App 把它推到畫面外
+                "topCrop" -> {
+                    activity.setTopCrop(m.optInt("px"))
+                }
+
                 // 播放器齒輪裡的「同步到電腦」：只是打開設定頁，YouTube 頁面也可以要求
                 "openSync" -> {
                     activity.showSettings()

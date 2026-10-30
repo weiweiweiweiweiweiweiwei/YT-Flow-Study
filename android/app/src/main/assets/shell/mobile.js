@@ -16,6 +16,8 @@
 //   4. 點影片畫面任何地方 = 播放／暫停（查完單字不用特地去按正中央的播放鈕）。
 //   5. 設定裡：藏起「隱藏推薦影片」（桌面版用的），加上「句子按鈕」開關與「同步到電腦」。
 //   6. 所有 Shorts 藏起來。
+//   7. 看影片時跟手機版 Chrome 一樣：頂端的 YouTube 列收起來（App 把它推到畫面外）、
+//      進度條撐滿播放器整個寬度。
 // ============================================================================
 
 (function () {
@@ -275,10 +277,60 @@
     });
   }
 
+  // ---------- 7. 看影片時收起頂端的 YouTube 列、進度條撐滿 ----------
+
+  let lastCrop = -1;
+  function reportTopBar() {
+    let px = 0;
+    if (location.pathname === "/watch" && !document.fullscreenElement) {
+      const bar = document.querySelector("ytm-mobile-topbar-renderer, #header-bar, header.mobile-topbar-header");
+      if (bar) {
+        const r = bar.getBoundingClientRect();
+        // 只在那一列真的貼在畫面頂端時才收（YouTube 自己收起來時就不用管）
+        if (r.height > 0 && r.top <= 1 && r.bottom > 0) px = Math.round(r.bottom * window.devicePixelRatio);
+      }
+    }
+    if (px === lastCrop || !window.__fsTransport) return;
+    lastCrop = px;
+    window.__fsTransport.post({ op: "topCrop", px });
+  }
+
+  function widenProgressBar(layer) {
+    if (document.fullscreenElement) return;
+    const p = player();
+    if (!p || !layer) return;
+    const scope = layer.parentElement;
+    const slider = Array.from(scope.querySelectorAll("[role='slider']")).find((s) => !layer.contains(s));
+    if (!slider) return;
+    // 往上找進度條本體：最外層、但還不包含按鈕與時間的那一層
+    let host = slider;
+    for (let n = slider.parentElement; n && n !== scope && !n.contains(p); n = n.parentElement) {
+      if (n.querySelector("button, [role='button']") || /\d:\d\d/.test(n.textContent || "")) break;
+      host = n;
+    }
+    const pr = p.getBoundingClientRect();
+    const key = Math.round(pr.width) + "/" + Math.round(pr.left);
+    if (host.__flowstudyWidened === key) return;
+    // 先拿掉之前加的調整，量出 YouTube 原本的位置
+    host.style.removeProperty("width");
+    host.style.removeProperty("max-width");
+    host.style.removeProperty("margin-left");
+    const hr = host.getBoundingClientRect();
+    if (!hr.width) return; // 控制列收起來時量不到，等它出現再說
+    host.__flowstudyWidened = key;
+    if (pr.width - hr.width < 12) return; // 本來就滿寬
+    const marginLeft = parseFloat(getComputedStyle(host).marginLeft) || 0;
+    host.style.setProperty("width", pr.width + "px", "important");
+    host.style.setProperty("max-width", "none", "important");
+    host.style.setProperty("margin-left", marginLeft + (pr.left - hr.left) + "px", "important");
+  }
+
   // 圖層位置、膠囊要不要顯示：常常檢查（YouTube 的控制列一淡出，膠囊就跟著消失）
   function fastTick() {
     const layer = ensureLayer();
     if (layer) placeControls(layer);
+    reportTopBar();
+    widenProgressBar(layer);
   }
   // 頁面上新出現的東西（設定視窗、翻譯框、Shorts）：有新元素時才看
   let scheduled = false;
