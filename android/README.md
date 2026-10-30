@@ -37,6 +37,9 @@
 - 平板接藍牙鍵盤時，`a/s/d`、空白鍵、`Z` 都跟電腦一樣能用。
 - 全螢幕時手機會自動轉橫向。
 - 畫面固定是手機版面，不能兩指縮放。
+- **背景播放**：影片播放中切到別的 App 或關掉螢幕，聲音會繼續；通知列會出現「FlowStudy 背景播放中」，點它回到影片、按「停止」就暫停。
+- **Shorts 全部關掉**：首頁、搜尋結果、底部選單都看不到 Shorts，點到 Shorts 的連結也不會打開。
+- 播放器上的進度條、全螢幕下方的按讚／收藏那一排、「更多影片」都藏起來了。
 - 手機上不做複習：單字一樣會收藏起來，到電腦版的學習面板複習（要先設定下面的同步）。
 
 ## 擋廣告
@@ -81,7 +84,8 @@ YouTube WebView ──┐                                   ┌── 背景 Web
 | `assets/shell/chrome-shim.js` | `chrome.storage / runtime / alarms / identity / downloads` 的替身，全部轉給原生端 |
 | `assets/shell/youtube-prelude.js` | 建立 Trusted Types 預設政策（content.js 原本在隔離世界，不受 YouTube 的 CSP 限制） |
 | `assets/shell/touch.js` | 把觸控手勢翻譯成 content.js 本來就認得的滑鼠事件 |
-| `assets/shell/mobile.js` | 手機版 YouTube 的轉接：沉浸模式按鈕的位置、擋掉 YouTube 對我們介面的觸控反應、設定裡的「同步到電腦」 |
+| `assets/shell/mobile.js` | 手機版 YouTube 的轉接：在 YouTube 的觸控層上方疊一層放字幕條與沉浸模式按鈕、藏起進度條／按讚列／更多影片／Shorts、回報播放狀態給背景播放 |
+| `PlaybackService.kt` | 背景播放用的前景服務與通知 |
 | `assets/shell/adblock.js`、`AdBlock.kt` | 擋廣告（播放器資料、頁面廣告欄位、廣告網路請求） |
 | `assets/shell/background.html` | 載入 `background.js` 的空頁面 |
 | `Scripts.kt` | 照 `manifest.json` 的規則把擴充功能檔案串成要注入的腳本 |

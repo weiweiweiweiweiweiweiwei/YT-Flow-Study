@@ -8,6 +8,10 @@ import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -45,6 +49,7 @@ import java.io.ByteArrayInputStream
  * 整個 App 就是一個手機版 YouTube（m.youtube.com），注入 content.js 等，跟電腦上裝擴充功能一樣。
  *
  * - 看影片時右側有一排半透明的「◀ ↻ ▶」：手機沒有鍵盤，a/s/d 改成按鈕
+ * - 切到背景時影片繼續播（PlaybackService）；Shorts 一律不開
  * - 另外有一個 1×1、看不見的 WebView 跑 background.js
  * - 同步設定頁（review.html 的設定）平常不出現，只在播放器齒輪裡點「同步到電腦」時才打開
  */
@@ -68,6 +73,9 @@ class MainActivity : ComponentActivity() {
     private var firstResume = true
     private var lastResumeAt = 0L
     private var lastResumeSyncAt = 0L
+    private var videoPlaying = false
+
+    private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     private val pickFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         filePathCallback?.onReceiveValue(uri?.let { arrayOf(it) })
@@ -103,6 +111,15 @@ class MainActivity : ComponentActivity() {
 
         onBackPressedDispatcher.addCallback(this) { handleBack() }
 
+        // 背景播放的通知按「停止」：把影片暫停
+        PlaybackService.onStopRequested = { runOnUiThread { pauseVideos() } }
+        // Android 13 起要允許通知，背景播放時通知列才看得到「停止」按鈕
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
         if (!handleIntent(intent)) youtube.loadUrl(HOME_URL)
     }
 
@@ -117,7 +134,7 @@ class MainActivity : ComponentActivity() {
         if (!::hub.isInitialized) return
         isResumedNow = true
         lastResumeAt = SystemClock.elapsedRealtime()
-        youtube.onResume()
+        stopService(Intent(this, PlaybackService::class.java))
         hub.auth.onActivityResumed()
 
         // 回到 App 時跟雲端對一次帳（剛啟動時 background.js 自己會做，不用重複；沒登入就什麼都不做）
@@ -133,13 +150,21 @@ class MainActivity : ComponentActivity() {
         super.onPause()
         if (!::hub.isInitialized) return
         isResumedNow = false
-        // 跟關掉分頁一樣：影片停下、沉浸計時暫停（content.js 看的是 visibilitychange）。
-        // 背景頁不暫停，備份與同步照常。
-        youtube.onPause()
+        // 背景播放：影片正在播就開前景服務，系統才不會把 App 凍結、聲音才會繼續。
+        // 影片沒在播就什麼都不做（WebView 不暫停，回來時畫面還在原處）。
+        if (videoPlaying && !settingsVisible) {
+            try {
+                startForegroundService(Intent(this, PlaybackService::class.java))
+            } catch (e: Exception) {
+                Log.w(TAG, "無法開始背景播放", e)
+            }
+        }
         hub.flush()
     }
 
     override fun onDestroy() {
+        PlaybackService.onStopRequested = null
+        stopService(Intent(this, PlaybackService::class.java))
         if (::hub.isInitialized) {
             hub.flush()
             listOf(youtube, settingsView, backgroundView).forEach { it.destroy() }
@@ -152,6 +177,12 @@ class MainActivity : ComponentActivity() {
     /** 背景換 Google token 會閃一下瀏覽器分頁，只在「剛打開 App」或「正在看同步設定」時允許。 */
     fun allowSilentAuth(): Boolean =
         isResumedNow && (settingsVisible || SystemClock.elapsedRealtime() - lastResumeAt < 20_000)
+
+    /** mobile.js 回報主影片開始／暫停。在背景時影片停了，就把背景播放的通知收掉。 */
+    fun onVideoPlaying(playing: Boolean) {
+        videoPlaying = playing
+        if (!playing && !isResumedNow) stopService(Intent(this, PlaybackService::class.java))
+    }
 
     fun bringToFront() {
         startActivity(
@@ -173,7 +204,7 @@ class MainActivity : ComponentActivity() {
     fun showSettings() {
         if (customView != null) customViewCallback?.onCustomViewHidden()
         settingsVisible = true
-        youtube.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){ v.pause(); });", null)
+        pauseVideos()
         settingsView.loadUrl(Scripts.SETTINGS_URL)
         settingsView.visibility = View.VISIBLE
         updateSentencePill()
@@ -247,7 +278,7 @@ class MainActivity : ComponentActivity() {
     /** 只在觀看頁出現；全螢幕時搬到全螢幕畫面的右側中間。 */
     private fun updateSentencePill() {
         val url = youtube.url ?: ""
-        val onWatchPage = url.contains("/watch") || url.contains("/shorts/")
+        val onWatchPage = url.contains("/watch")
         sentencePill.visibility = if (onWatchPage && !settingsVisible) View.VISIBLE else View.GONE
     }
 
@@ -339,6 +370,10 @@ class MainActivity : ComponentActivity() {
         youtube.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val uri = request.url
+                if (isShorts(uri)) {
+                    blockedShorts()
+                    return true
+                }
                 if (uri.host == "www.youtube.com" || uri.host == "youtube.com" || uri.host == "youtu.be") {
                     view.loadUrl(toMobileYoutube(uri).toString())
                     return true
@@ -356,7 +391,13 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
-                updateSentencePill() // YouTube 是單頁應用，換影片不會重新載入頁面，只會走到這裡
+                // YouTube 是單頁應用，換頁不會重新載入，只會走到這裡；點進 Shorts 也是在這裡才知道
+                if (url != null && isShorts(Uri.parse(url))) {
+                    if (view.canGoBack()) view.goBack() else view.loadUrl(HOME_URL)
+                    blockedShorts()
+                    return
+                }
+                updateSentencePill()
             }
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -430,6 +471,21 @@ class MainActivity : ComponentActivity() {
         updateSentencePill()
     }
 
+    private fun pauseVideos() {
+        youtube.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){ v.pause(); });", null)
+    }
+
+    private fun isShorts(uri: Uri): Boolean = isYoutube(uri) && (uri.path ?: "").startsWith("/shorts")
+
+    private var lastShortsToastAt = 0L
+
+    private fun blockedShorts() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastShortsToastAt < 3000) return
+        lastShortsToastAt = now
+        Toast.makeText(this, "Shorts 已關閉", Toast.LENGTH_SHORT).show()
+    }
+
     private fun pressKey(key: String) {
         youtube.evaluateJavascript(Scripts.pressKey(key), null)
     }
@@ -489,6 +545,10 @@ class MainActivity : ComponentActivity() {
             val link = Regex("https?://\\S+").find(text)?.value ?: return false
             val uri = Uri.parse(link)
             if (!isYoutube(uri)) return false
+            if (isShorts(uri)) {
+                blockedShorts()
+                return false
+            }
             showYoutube(toMobileYoutube(uri).toString())
             return true
         }

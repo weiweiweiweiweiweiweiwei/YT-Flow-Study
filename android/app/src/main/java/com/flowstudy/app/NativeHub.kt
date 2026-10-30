@@ -155,6 +155,11 @@ class NativeHub(private val activity: MainActivity, userAgent: String) {
                     }
                 }
 
+                // 影片開始／暫停（mobile.js 回報），決定切到背景時要不要繼續播
+                "playbackState" -> {
+                    activity.onVideoPlaying(m.optBoolean("playing"))
+                }
+
                 // 播放器齒輪裡的「同步到電腦」：只是打開設定頁，YouTube 頁面也可以要求
                 "openSync" -> {
                     activity.showSettings()

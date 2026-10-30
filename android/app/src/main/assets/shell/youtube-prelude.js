@@ -23,3 +23,23 @@
     console.warn("[FlowStudy] 無法建立 Trusted Types 預設政策：", e);
   }
 })();
+
+// ============================================================================
+// 背景播放：App 切到背景或關掉螢幕時，YouTube 會看 document.hidden / visibilitychange
+// 把影片停下來。這裡讓頁面永遠回報「看得見」，影片就會繼續播（聲音照常出來）。
+// App 端另外開一個前景服務（PlaybackService），系統才不會把背景的 App 凍結。
+// ============================================================================
+(function () {
+  if (window.top !== window) return;
+  try {
+    Object.defineProperty(Document.prototype, "hidden", { configurable: true, get: () => false });
+    Object.defineProperty(Document.prototype, "visibilityState", { configurable: true, get: () => "visible" });
+    Object.defineProperty(Document.prototype, "webkitHidden", { configurable: true, get: () => false });
+    Object.defineProperty(Document.prototype, "webkitVisibilityState", { configurable: true, get: () => "visible" });
+  } catch (e) {}
+  const swallow = (e) => e.stopImmediatePropagation();
+  for (const type of ["visibilitychange", "webkitvisibilitychange", "freeze"]) {
+    window.addEventListener(type, swallow, true);
+    document.addEventListener(type, swallow, true);
+  }
+})();

@@ -2362,7 +2362,13 @@ function escapeHtml(str) {
 }
 
 function getPlayerContainer() {
-  return document.getElementById("movie_player") || document.querySelector(".html5-video-player");
+  // Android App（手機版 YouTube）會在播放器正上方另外疊一層：手機版播放器上面蓋著一層
+  // 透明的觸控層，掛在播放器裡面的東西都點不到。電腦上沒有這一層，照舊用播放器本身。
+  return (
+    document.getElementById("flowstudy-player-layer") ||
+    document.getElementById("movie_player") ||
+    document.querySelector(".html5-video-player")
+  );
 }
 
 function ensureCaptionBar() {
