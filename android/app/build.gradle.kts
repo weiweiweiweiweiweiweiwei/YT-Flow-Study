@@ -9,11 +9,12 @@ val extensionRoot = rootProject.projectDir.parentFile
 val extAssetsDir = layout.buildDirectory.dir("generated/extAssets")
 
 val copyExtension by tasks.registering(Sync::class) {
-    from(extensionRoot) {
-        include("*.js", "*.css", "*.html", "*.png", "*.svg", "manifest.json")
-        include("core/**", "pages/**")
-        exclude("*.test.html", "test-fixture-*.js", "popup.*", "offscreen.*")
-    }
+    // 只列出要的檔案與資料夾，不把整個 repo 根目錄當成輸入（android/ 的編譯輸出也在裡面）
+    val skip = Regex("""(\.test\.html|^test-fixture-.*|^popup\..*|^offscreen\..*)$""")
+    val keep = Regex("""\.(js|css|html|png|svg)$|^manifest\.json$""")
+    from(extensionRoot.listFiles { f -> f.isFile && keep.containsMatchIn(f.name) && !skip.containsMatchIn(f.name) }!!.toList())
+    from(File(extensionRoot, "core")) { into("core") }
+    from(File(extensionRoot, "pages")) { into("pages") }
     into(extAssetsDir.map { it.dir("ext") })
 }
 

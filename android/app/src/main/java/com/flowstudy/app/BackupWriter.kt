@@ -23,25 +23,25 @@ class BackupWriter(private val context: Context) {
         val resolver = context.contentResolver
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
 
-        var uri: Uri? = null
-        if (conflictAction == "overwrite") uri = find(collection, dir, name)
-
-        if (uri == null) {
+        val existing = if (conflictAction == "overwrite") find(collection, dir, name) else null
+        val uri: Uri = if (existing != null) {
+            resolver.openOutputStream(existing, "wt").use { out ->
+                (out ?: throw IllegalStateException("無法寫入備份檔")).write(bytes)
+            }
+            existing
+        } else {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, name)
                 put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
                 put(MediaStore.MediaColumns.RELATIVE_PATH, dir)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
-            uri = resolver.insert(collection, values) ?: throw IllegalStateException("無法在下載資料夾建立備份檔")
-            resolver.openOutputStream(uri, "w").use { out ->
+            val created = resolver.insert(collection, values) ?: throw IllegalStateException("無法在下載資料夾建立備份檔")
+            resolver.openOutputStream(created, "w").use { out ->
                 (out ?: throw IllegalStateException("無法寫入備份檔")).write(bytes)
             }
-            resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
-        } else {
-            resolver.openOutputStream(uri, "wt").use { out ->
-                (out ?: throw IllegalStateException("無法寫入備份檔")).write(bytes)
-            }
+            resolver.update(created, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+            created
         }
 
         val actualName = displayName(uri) ?: name

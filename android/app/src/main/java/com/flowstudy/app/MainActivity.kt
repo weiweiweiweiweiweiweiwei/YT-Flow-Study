@@ -56,7 +56,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var hub: NativeHub
     private lateinit var youtube: FlowWebView
     private lateinit var review: WebView
-    private lateinit var background: WebView
+    private lateinit var backgroundView: WebView
 
     private lateinit var root: FrameLayout
     private lateinit var fullscreenHost: FrameLayout
@@ -149,7 +149,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         if (::hub.isInitialized) {
             hub.flush()
-            listOf(youtube, review, background).forEach { it.destroy() }
+            listOf(youtube, review, backgroundView).forEach { it.destroy() }
         }
         super.onDestroy()
     }
@@ -210,8 +210,8 @@ class MainActivity : ComponentActivity() {
         root.addView(column, FrameLayout.LayoutParams(MATCH, MATCH))
 
         // 背景頁：要掛在畫面上（只有 1×1、完全透明），WebView 才會被當成「可見」而正常執行
-        background = WebView(this).apply { alpha = 0f }
-        root.addView(background, FrameLayout.LayoutParams(1, 1))
+        backgroundView = WebView(this).apply { alpha = 0f }
+        root.addView(backgroundView, FrameLayout.LayoutParams(1, 1))
 
         fullscreenHost = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -286,16 +286,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setupBackground(installReason: String?) {
-        commonSettings(background)
-        WebViewCompat.addWebMessageListener(background, BRIDGE_NAME, setOf(Scripts.APP_ORIGIN), hub.listener)
-        WebViewCompat.addDocumentStartJavaScript(background, Scripts.page(this, installReason), setOf(Scripts.APP_ORIGIN))
-        background.webViewClient = object : AppPageClient() {
+        commonSettings(backgroundView)
+        WebViewCompat.addWebMessageListener(backgroundView, BRIDGE_NAME, setOf(Scripts.APP_ORIGIN), hub.listener)
+        WebViewCompat.addDocumentStartJavaScript(backgroundView, Scripts.page(this, installReason), setOf(Scripts.APP_ORIGIN))
+        backgroundView.webViewClient = object : AppPageClient() {
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 hub.onBackgroundReloading()
             }
         }
-        background.webChromeClient = LoggingChromeClient("background")
-        background.loadUrl(Scripts.BACKGROUND_URL)
+        backgroundView.webChromeClient = LoggingChromeClient("background")
+        backgroundView.loadUrl(Scripts.BACKGROUND_URL)
     }
 
     private fun setupReview(installReason: String?) {
