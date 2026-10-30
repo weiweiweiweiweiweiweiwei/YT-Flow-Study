@@ -181,6 +181,12 @@ class MainActivity : ComponentActivity() {
     fun allowSilentAuth(): Boolean =
         isResumedNow && (settingsVisible || SystemClock.elapsedRealtime() - lastResumeAt < 20_000)
 
+    fun copyToClipboard(text: String) {
+        val clipboard = getSystemService(android.content.ClipboardManager::class.java)
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("FlowStudy 版面資訊", text))
+        Toast.makeText(this, "已複製，貼到對話裡就可以", Toast.LENGTH_SHORT).show()
+    }
+
     /** mobile.js 回報主影片開始／暫停。在背景時影片停了，就把背景播放的通知收掉。 */
     fun onVideoPlaying(playing: Boolean) {
         videoPlaying = playing

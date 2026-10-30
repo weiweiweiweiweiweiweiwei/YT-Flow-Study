@@ -225,6 +225,11 @@
       '<span><div class="fs-panel-label">同步到電腦</div>' +
       '<div class="fs-panel-sub">用 Google 帳號登入，單字和沉浸時數會跟電腦版共用</div></span>' +
       '<button class="flowstudy-link" type="button">設定</button>' +
+      "</div>" +
+      '<div class="fs-panel-row flowstudy-sync-row">' +
+      '<span><div class="fs-panel-label">版面除錯資訊</div>' +
+      '<div class="fs-panel-sub">畫面跑版時，按「複製」再貼給開發者</div></span>' +
+      '<button class="flowstudy-link flowstudy-debug" type="button">複製</button>' +
       "</div>";
 
     const sw = wrap.querySelector("#fsSentenceButtons");
@@ -239,6 +244,9 @@
       chrome.storage.local.set({ [SENTENCE_BUTTONS_KEY]: on });
     });
 
+    wrap.querySelector(".flowstudy-debug").addEventListener("click", () => {
+      if (window.__fsTransport) window.__fsTransport.call("copyText", { text: layoutReport() }).catch(() => {});
+    });
     wrap.querySelector(".flowstudy-link").addEventListener("click", () => {
       if (window.__fsTransport) window.__fsTransport.call("openSync", {}).catch(() => {});
     });
@@ -279,50 +287,129 @@
 
   // ---------- 7. 看影片時收起頂端的 YouTube 列、進度條撐滿 ----------
 
+  // 這兩樣都照「在畫面上的位置」找，不靠 YouTube 的元素名稱（名稱常改，猜錯就完全沒作用）。
+
+  // 頂端的 YouTube 列：貼在畫面最上緣、固定不動、跟畫面差不多寬、不高的那一塊（而且不是播放器）
+  function findTopBar(p) {
+    const els = document.elementsFromPoint(innerWidth / 2, 2);
+    for (const el of els) {
+      if (el === document.documentElement || el === document.body) continue;
+      if (el.closest("#flowstudy-player-layer") || (p && (el.contains(p) || p.contains(el)))) continue;
+      for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+        const pos = getComputedStyle(n).position;
+        if (pos !== "fixed" && pos !== "sticky") continue;
+        const r = n.getBoundingClientRect();
+        if (r.top <= 1 && r.bottom > 20 && r.height < 130 && r.width > innerWidth * 0.8 && !(p && n.contains(p))) return n;
+        break;
+      }
+    }
+    return null;
+  }
+
   let lastCrop = -1;
   function reportTopBar() {
     let px = 0;
+    const p = player();
     if (location.pathname === "/watch" && !document.fullscreenElement) {
-      const bar = document.querySelector("ytm-mobile-topbar-renderer, #header-bar, header.mobile-topbar-header");
-      if (bar) {
-        const r = bar.getBoundingClientRect();
-        // 只在那一列真的貼在畫面頂端時才收（YouTube 自己收起來時就不用管）
-        if (r.height > 0 && r.top <= 1 && r.bottom > 0) px = Math.round(r.bottom * window.devicePixelRatio);
-      }
+      const bar = findTopBar(p);
+      if (bar) px = Math.round(bar.getBoundingClientRect().bottom * window.devicePixelRatio);
     }
     if (px === lastCrop || !window.__fsTransport) return;
     lastCrop = px;
     window.__fsTransport.post({ op: "topCrop", px });
   }
 
-  function widenProgressBar(layer) {
-    if (document.fullscreenElement) return;
-    const p = player();
-    if (!p || !layer) return;
-    const scope = layer.parentElement;
-    const slider = Array.from(scope.querySelectorAll("[role='slider']")).find((s) => !layer.contains(s));
-    if (!slider) return;
-    // 往上找進度條本體：最外層、但還不包含按鈕與時間的那一層
-    let host = slider;
-    for (let n = slider.parentElement; n && n !== scope && !n.contains(p); n = n.parentElement) {
-      if (n.querySelector("button, [role='button']") || /\d:\d\d/.test(n.textContent || "")) break;
-      host = n;
-    }
+  // 進度條：播放器下半部、很細（不到 24px）、有播放器一半以上寬、裡面沒有字的那幾層
+  function findProgressBars(p, scope, layer) {
     const pr = p.getBoundingClientRect();
+    const found = [];
+    for (const el of scope.querySelectorAll("*")) {
+      if (layer && layer.contains(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height < 1 || r.height > 24 || r.width < pr.width * 0.5 || r.width > pr.width + 2) continue;
+      if (r.top < pr.top + pr.height * 0.45 || r.bottom > pr.bottom + 40) continue;
+      if ((el.textContent || "").trim()) continue; // 有字的是字幕、時間，不是進度條
+      found.push(el);
+    }
+    return found; // 文件順序：外層在前
+  }
+
+  let lastWidenAt = 0;
+  function widenProgressBar(layer) {
+    if (document.fullscreenElement || Date.now() - lastWidenAt < 400) return;
+    lastWidenAt = Date.now();
+    const p = player();
+    if (!p || !layer || !layer.parentElement) return;
+    const pr = p.getBoundingClientRect();
+    if (!pr.width) return;
     const key = Math.round(pr.width) + "/" + Math.round(pr.left);
-    if (host.__flowstudyWidened === key) return;
-    // 先拿掉之前加的調整，量出 YouTube 原本的位置
-    host.style.removeProperty("width");
-    host.style.removeProperty("max-width");
-    host.style.removeProperty("margin-left");
-    const hr = host.getBoundingClientRect();
-    if (!hr.width) return; // 控制列收起來時量不到，等它出現再說
-    host.__flowstudyWidened = key;
-    if (pr.width - hr.width < 12) return; // 本來就滿寬
-    const marginLeft = parseFloat(getComputedStyle(host).marginLeft) || 0;
-    host.style.setProperty("width", pr.width + "px", "important");
-    host.style.setProperty("max-width", "none", "important");
-    host.style.setProperty("margin-left", marginLeft + (pr.left - hr.left) + "px", "important");
+    for (const bar of findProgressBars(p, layer.parentElement, layer)) {
+      if (bar.__flowstudyWidened === key) continue;
+      bar.__flowstudyWidened = key;
+      const cs = getComputedStyle(bar);
+      // 內縮常常是外層的左右留白（padding）造成的：拿掉
+      if (parseFloat(cs.paddingLeft) || parseFloat(cs.paddingRight)) {
+        bar.style.setProperty("padding-left", "0", "important");
+        bar.style.setProperty("padding-right", "0", "important");
+      }
+      bar.style.removeProperty("width");
+      bar.style.removeProperty("max-width");
+      bar.style.removeProperty("margin-left");
+      const r = bar.getBoundingClientRect();
+      if (!r.width || pr.width - r.width < 12) continue; // 本來就滿寬
+      // 自己就比播放器窄（外層留白以外的原因）：直接拉寬、對齊左邊
+      const marginLeft = parseFloat(getComputedStyle(bar).marginLeft) || 0;
+      bar.style.setProperty("width", pr.width + "px", "important");
+      bar.style.setProperty("max-width", "none", "important");
+      bar.style.setProperty("margin-left", marginLeft + (pr.left - r.left) + "px", "important");
+      // 外面幾層如果會把超出的部分切掉，打開
+      for (let n = bar.parentElement, i = 0; n && i < 4 && !n.contains(p); n = n.parentElement, i++) {
+        if (getComputedStyle(n).overflow !== "visible") n.style.setProperty("overflow", "visible", "important");
+      }
+    }
+  }
+
+  // ---------- 除錯：把播放器附近的版面資訊複製下來，貼給開發者看 ----------
+  function describe(el) {
+    if (!el || el.nodeType !== 1) return String(el);
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const cls = typeof el.className === "string" ? el.className.trim().split(/\s+/).slice(0, 4).join(".") : "";
+    const label = el.getAttribute("aria-label") || el.getAttribute("role") || "";
+    return `${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}${cls ? "." + cls : ""}${label ? ` [${label.slice(0, 30)}]` : ""}` +
+      ` ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)} ${cs.position}` +
+      (cs.paddingLeft !== "0px" ? ` pad:${cs.paddingLeft}` : "") + (cs.marginLeft !== "0px" ? ` mar:${cs.marginLeft}` : "");
+  }
+
+  function layoutReport() {
+    const lines = [];
+    const p = player();
+    const layer = document.getElementById("flowstudy-player-layer");
+    lines.push(`url ${location.pathname} viewport ${innerWidth}x${innerHeight} dpr ${devicePixelRatio} fs ${!!document.fullscreenElement}`);
+    lines.push(`ua ${navigator.userAgent}`);
+    lines.push("== top (elementsFromPoint)");
+    document.elementsFromPoint(innerWidth / 2, 2).slice(0, 8).forEach((el) => lines.push("  " + describe(el)));
+    const bar = findTopBar(p);
+    lines.push("topBar " + (bar ? describe(bar) : "none") + " crop " + lastCrop);
+    if (p) {
+      lines.push("== player ancestors");
+      for (let n = p, i = 0; n && i < 7; n = n.parentElement, i++) lines.push("  " + describe(n));
+      const scope = layer && layer.parentElement;
+      if (scope) {
+        lines.push("== progress candidates");
+        findProgressBars(p, scope, layer).forEach((el) => lines.push("  " + describe(el) + " < " + describe(el.parentElement)));
+        lines.push("== sliders");
+        scope.querySelectorAll("[role='slider'], input[type='range']").forEach((el) => lines.push("  " + describe(el)));
+        lines.push("== thin elements near player bottom");
+        const pr = p.getBoundingClientRect();
+        let count = 0;
+        for (const el of scope.querySelectorAll("*")) {
+          const r = el.getBoundingClientRect();
+          if (r.height > 0 && r.height <= 24 && r.width > 40 && r.top > pr.top + pr.height * 0.4 && count++ < 25) lines.push("  " + describe(el));
+        }
+      }
+    }
+    return lines.join("\n");
   }
 
   // 圖層位置、膠囊要不要顯示：常常檢查（YouTube 的控制列一淡出，膠囊就跟著消失）

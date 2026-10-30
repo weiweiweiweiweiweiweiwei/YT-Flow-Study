@@ -165,6 +165,12 @@ class NativeHub(private val activity: MainActivity, userAgent: String) {
                     activity.setTopCrop(m.optInt("px"))
                 }
 
+                // 設定裡的「版面除錯資訊 → 複製」：放進剪貼簿，使用者再貼給開發者
+                "copyText" -> {
+                    activity.copyToClipboard(m.optString("text"))
+                    reply(proxy, id, null)
+                }
+
                 // 播放器齒輪裡的「同步到電腦」：只是打開設定頁，YouTube 頁面也可以要求
                 "openSync" -> {
                     activity.showSettings()
