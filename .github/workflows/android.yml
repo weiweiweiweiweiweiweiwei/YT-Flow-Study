@@ -1,0 +1,59 @@
+# 每次推上來就編譯 Android 版 FlowStudy，產生可以直接安裝到手機的 APK。
+#
+# 下載方式（二選一）：
+#   - 這次執行的 Summary 頁面最下方「Artifacts」→ FlowStudy-apk（zip，解開就是 APK）
+#   - Releases 裡的「Android 最新版」（android-latest），手機瀏覽器直接點 APK 就能下載安裝
+name: Android APK
+
+on:
+  push:
+    paths:
+      - "android/**"
+      - "*.js"
+      - "*.css"
+      - "*.html"
+      - "manifest.json"
+      - "core/**"
+      - "pages/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk FlowStudy.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlowStudy-apk
+          path: FlowStudy.apk
+
+      - name: Publish "android-latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="從 ${GITHUB_REF_NAME} 分支 ${GITHUB_SHA::7} 自動編譯（第 ${GITHUB_RUN_NUMBER} 次）。用手機下載 FlowStudy.apk 直接安裝即可，新版會覆蓋舊版、資料保留。"
+          if gh release view android-latest >/dev/null 2>&1; then
+            gh release upload android-latest FlowStudy.apk --clobber
+            gh release edit android-latest --notes "$NOTES" --target "$GITHUB_SHA"
+          else
+            gh release create android-latest FlowStudy.apk --title "Android 最新版" --notes "$NOTES" --prerelease --target "$GITHUB_SHA"
+          fi

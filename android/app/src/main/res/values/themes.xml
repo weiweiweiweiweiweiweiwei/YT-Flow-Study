@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.FlowStudy" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">#FF111827</item>
+    </style>
+</resources>

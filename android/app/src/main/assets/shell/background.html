@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<!-- 擴充功能 service worker（background.js）在 App 裡的家：一個看不見的 WebView。
+     chrome.* 替身由 App 在頁面一建立時就注入（見 MainActivity.buildPageScript），
+     所以這裡直接載入原封不動的 background.js 就好。 -->
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>FlowStudy background</title>
+</head>
+<body>
+  <script type="module" src="../ext/background.js"></script>
+</body>
+</html>
